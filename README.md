@@ -53,16 +53,22 @@ Here is a simple step-by-step instruction that you can share with your users on 
 
 ## Prerequisites
 
-Before running the extractor, ensure you have:
-
+### General Requirements
 - **Audiobookshelf Server** (v2.0+) up and running with audiobooks and bookmarks.
-- **FFmpeg**: Mandatory tool used for audio slicing, segment extraction, and audio conversion for the Whisper and Vosk transcription engines.
+- **Audio Files Access**: Direct local directory access or Docker volume mount to your Audiobookshelf audio files so the extractor can slice segments directly from source files.
+
+### If running via Docker (Recommended)
+- **Docker Engine** (v20.10+) and **Docker Compose** (v2.0+).
+- *All runtimes, tools (FFmpeg), and speech-to-text models are automatically packaged and pre-configured inside the container.*
+
+### If running directly on host (NPM / PM2)
+- **Node.js**: `v18.0.0` or higher (with `npm`).
+- **Python**: `v3.10` or higher (with `pip` and `venv`).
+- **FFmpeg**: Mandatory system tool for audio slicing, segment extraction, and audio transcription conversion:
   - *Ubuntu / Debian*: `sudo apt-get install -y ffmpeg`
   - *macOS (Homebrew)*: `brew install ffmpeg`
   - *Arch Linux*: `sudo pacman -S ffmpeg`
   - *Fedora / RHEL*: `sudo dnf install -y ffmpeg`
-  - *(Note: FFmpeg is already bundled and pre-configured when using Docker.)*
-- **Audio Files Access**: Direct local directory access or Docker volume mount to your Audiobookshelf audio files so the extractor can slice segments directly from source files.
 
 ---
 
@@ -103,6 +109,8 @@ npm run dev
 
 ### 3. PM2 (Process Manager)
 
+The project includes an `ecosystem.config.cjs` configuration that manages both the web server (`abs-extractor-web` on port 13379) and the Python sidecar (`abs-extractor-sidecar` on port 8000).
+
 ```bash
 # 1. Install required system tools (FFmpeg for audio processing)
 sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -116,9 +124,12 @@ npm install
 npm run build
 pip install -r requirements.txt
 
-# 4. Start with PM2
-pm2 start dist/server.cjs --name "abs-bookmarks-extractor"
+# 4. Start all services using PM2 Ecosystem
+pm2 start ecosystem.config.cjs
 pm2 save
+
+# Optional: To start on boot
+pm2 startup
 ```
 
 ---
@@ -154,7 +165,7 @@ sudo apt-get update && sudo apt-get install --only-upgrade -y ffmpeg
 npm install
 npm run build
 pip install -U -r requirements.txt
-pm2 restart abs-bookmarks-extractor
+pm2 restart ecosystem.config.cjs --update-env
 ```
 
 ---
