@@ -4,7 +4,14 @@ import { createServer as createViteServer } from "vite";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+
+  // Port configuration:
+  // - In AI Studio container dev server, MUST bind to 3000 for ingress proxy routing.
+  // - In production (bundled dist/server.cjs or PM2), default to 13379 or process.env.PORT.
+  const isBundled = typeof __filename === "string" && __filename.endsWith(".cjs");
+  const PORT = (process.env.NODE_ENV === "production" || isBundled)
+    ? (Number(process.env.PORT) || 13379)
+    : 3000;
 
   app.use(express.json());
 

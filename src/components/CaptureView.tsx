@@ -481,11 +481,11 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
                   <div className="text-[11px] text-neutral-400 pt-1 border-t border-neutral-700">
                     Need help? Make sure the Python FastAPI sidecar is running (e.g.{' '}
                     <code className="text-white bg-[#101010] px-1 py-0.5 border border-neutral-700">
-                      docker compose up -d
+                      pm2 start ecosystem.config.cjs
                     </code>{' '}
                     or{' '}
                     <code className="text-white bg-[#101010] px-1 py-0.5 border border-neutral-700">
-                      uvicorn main:app --port 13379
+                      uvicorn main:app --port 13380
                     </code>
                     ).
                   </div>

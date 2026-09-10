@@ -36,8 +36,12 @@ WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
 # Ensure main volume directory exists
 os.makedirs(VOLUME_DIR, exist_ok=True)
 
+# Base directory of the repository (resolves safely regardless of execution directory)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+
 # Templates
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 # FastAPI App
 app = FastAPI(
@@ -1037,5 +1041,15 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", "13379"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    # Default sidecar port is 13380 (13379 is reserved for the web UI server)
+    port = int(os.environ.get("PORT", os.environ.get("SIDECAR_PORT", "13380")))
+    # Do not reload by default to avoid watching parent directories (e.g. /home/pi)
+    reload_enabled = os.environ.get("RELOAD", "false").lower() in ("true", "1", "yes")
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=reload_enabled,
+        reload_dirs=[BASE_DIR] if reload_enabled else None,
+        app_dir=BASE_DIR
+    )

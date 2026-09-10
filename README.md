@@ -74,7 +74,9 @@ Here is a simple step-by-step instruction that you can share with your users on 
 
 ## Installation
 
-Default application port: **13379**
+Default ports:
+- **Web UI & Express Server**: `13379`
+- **FastAPI Audio Sidecar**: `13380`
 
 ### 1. Docker (Recommended)
 
@@ -113,7 +115,7 @@ npm run dev
 
 ### 3. PM2 (Process Manager)
 
-The project includes an `ecosystem.config.cjs` configuration that manages both the web server (`abs-extractor-web` on port 13379) and the Python sidecar (`abs-extractor-sidecar` on port 8000).
+The project includes an `ecosystem.config.cjs` configuration that manages both the web server (`abs-extractor-web` on port 13379) and the Python sidecar (`abs-extractor-sidecar` on port 13380). Paths are dynamically resolved so it runs from any installation directory.
 
 ```bash
 # 1. Install required system tools (FFmpeg & Python venv)
