@@ -1,0 +1,6 @@
+{
+  "name": "Audiobookshelf Bookmarks Extractor",
+  "description": "Backend app for the bookmarks you create on ABS Mobile app.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,141 @@
+import express from "express";
+import path from "path";
+import { createServer as createViteServer } from "vite";
+
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
+
+  app.use(express.json());
+
+  // API Proxy Route for Audiobookshelf:
+  // Completely bypasses browser CORS restrictions by fetching server-to-server.
+  app.post("/api/proxy/abs", async (req, res) => {
+    let controller: AbortController | null = null;
+    let timeoutId: NodeJS.Timeout | null = null;
+
+    try {
+      const { targetUrl, method = "GET", headers = {}, body } = req.body;
+      if (!targetUrl || typeof targetUrl !== "string") {
+        return res.status(400).json({ error: "targetUrl is required" });
+      }
+
+      // Auto-prefix protocol if omitted
+      let cleanTargetUrl = targetUrl.trim();
+      if (!cleanTargetUrl.startsWith("http://") && !cleanTargetUrl.startsWith("https://")) {
+        cleanTargetUrl = `https://${cleanTargetUrl}`;
+      }
+
+      // Ensure valid URL
+      const parsedUrl = new URL(cleanTargetUrl);
+      if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+        return res.status(400).json({ error: "Invalid protocol. Only http and https are allowed." });
+      }
+
+      // Sanitize headers: remove hop-by-hop headers and host to avoid breaking upstream SNI/CORS
+      const safeHeaders: Record<string, string> = {};
+      if (headers && typeof headers === "object") {
+        for (const [k, v] of Object.entries(headers)) {
+          const lower = k.toLowerCase();
+          if (!["host", "connection", "content-length", "keep-alive", "transfer-encoding"].includes(lower) && typeof v === "string") {
+            safeHeaders[k] = v;
+          }
+        }
+      }
+      safeHeaders["User-Agent"] = safeHeaders["User-Agent"] || "Audiobookshelf-Bookmarks-Extractor/1.0";
+      safeHeaders["Accept"] = safeHeaders["Accept"] || "*/*";
+
+      controller = new AbortController();
+      timeoutId = setTimeout(() => controller?.abort(), 25000);
+
+      const fetchOptions: RequestInit = {
+        method,
+        headers: safeHeaders,
+        signal: controller.signal,
+      };
+
+      if (body && ["POST", "PUT", "PATCH"].includes(method.toUpperCase())) {
+        fetchOptions.body = typeof body === "string" ? body : JSON.stringify(body);
+        if (!safeHeaders["Content-Type"]) {
+          safeHeaders["Content-Type"] = "application/json";
+        }
+      }
+
+      const response = await fetch(cleanTargetUrl, fetchOptions);
+      if (timeoutId) clearTimeout(timeoutId);
+
+      const contentType = response.headers.get("content-type") || "";
+
+      let data;
+      if (contentType.includes("application/json")) {
+        data = await response.json();
+      } else {
+        data = await response.text();
+      }
+
+      return res.status(200).json({
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        data,
+      });
+    } catch (err: unknown) {
+      if (timeoutId) clearTimeout(timeoutId);
+
+      const errObj = err as { name?: string; message?: string; cause?: { message?: string; code?: string } };
+      const causeText = errObj?.cause?.message || errObj?.cause?.code || "";
+      const isTimeout = errObj?.name === "AbortError";
+
+      let msg = errObj?.message || "Failed to reach remote server";
+      if (isTimeout) {
+        msg = "Request timed out after 15 seconds";
+      } else if (causeText) {
+        msg = `${msg} (${causeText})`;
+      }
+
+      // Helpful context for localhost targets when running in cloud environments
+      let hint = "";
+      try {
+        const parsed = new URL(req.body?.targetUrl || "");
+        if (["localhost", "127.0.0.1", "0.0.0.0"].includes(parsed.hostname)) {
+          hint = " Note: 'localhost' refers to this cloud container, not your client computer. Connect directly from your browser or use a public tunnel.";
+        }
+      } catch {}
+
+      console.warn(`[ABS Proxy] Connection warning for ${req.body?.targetUrl || "unknown"}: ${msg}${hint}`);
+
+      return res.status(502).json({
+        ok: false,
+        status: 502,
+        error: "Proxy connection error",
+        message: `${msg}${hint}`,
+      });
+    }
+  });
+
+  // Health check endpoint
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok" });
+  });
+
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();
