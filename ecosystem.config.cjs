@@ -17,7 +17,7 @@ module.exports = {
       name: 'abs-extractor-sidecar',
       script: 'main.py',
       cwd: './',
-      interpreter: 'python3',
+      interpreter: require('fs').existsSync('./venv/bin/python3') ? './venv/bin/python3' : 'python3',
       instances: 1,
       autorestart: true,
       watch: false,

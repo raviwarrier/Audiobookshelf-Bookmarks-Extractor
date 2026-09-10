@@ -92,18 +92,22 @@ The service will be accessible at `http://[your ip:port/proxied url]`.
 ### 2. NPM (Direct)
 
 ```bash
-# 1. Install required system tools (FFmpeg for audio processing)
-sudo apt-get update && sudo apt-get install -y ffmpeg
+# 1. Install required system tools (FFmpeg & Python venv)
+sudo apt-get update && sudo apt-get install -y ffmpeg python3-venv
 
 # 2. Clone repository
 git clone https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor.git
 cd Audiobookshelf-Bookmarks-Extractor
 
-# 3. Install dependencies
+# 3. Create and activate a Python virtual environment (recommended to isolate dependencies)
+python3 -m venv venv
+source venv/bin/activate
+
+# 4. Install dependencies
 npm install
 pip install -r requirements.txt
 
-# 4. Start backend & dev frontend
+# 5. Start backend & dev frontend
 npm run dev
 ```
 
@@ -112,19 +116,23 @@ npm run dev
 The project includes an `ecosystem.config.cjs` configuration that manages both the web server (`abs-extractor-web` on port 13379) and the Python sidecar (`abs-extractor-sidecar` on port 8000).
 
 ```bash
-# 1. Install required system tools (FFmpeg for audio processing)
-sudo apt-get update && sudo apt-get install -y ffmpeg
+# 1. Install required system tools (FFmpeg & Python venv)
+sudo apt-get update && sudo apt-get install -y ffmpeg python3-venv
 
 # 2. Clone repository
 git clone https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor.git
 cd Audiobookshelf-Bookmarks-Extractor
 
-# 3. Install dependencies and build
-npm install
-npm run build
+# 3. Create Python virtual environment and install dependencies
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 
-# 4. Start all services using PM2 Ecosystem
+# 4. Install Node dependencies and build frontend
+npm install
+npm run build
+
+# 5. Start all services using PM2 Ecosystem
 pm2 start ecosystem.config.cjs
 pm2 save
 
@@ -150,9 +158,10 @@ git pull origin main
 # Ensure system tools are up to date
 sudo apt-get update && sudo apt-get install --only-upgrade -y ffmpeg
 
+source venv/bin/activate
+pip install -U -r requirements.txt
 npm install
 npm run build
-pip install -U -r requirements.txt
 ```
 
 ### 3. PM2
@@ -162,9 +171,10 @@ git pull origin main
 # Ensure system tools are up to date
 sudo apt-get update && sudo apt-get install --only-upgrade -y ffmpeg
 
+source venv/bin/activate
+pip install -U -r requirements.txt
 npm install
 npm run build
-pip install -U -r requirements.txt
 pm2 restart ecosystem.config.cjs --update-env
 ```
 
