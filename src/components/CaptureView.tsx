@@ -12,7 +12,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { AbsActiveSession, AbsUser, Snippet } from '../types';
-import { createAbsBookmark } from '../lib/absClient';
+import { createAbsBookmark, formatAuthors } from '../lib/absClient';
 
 interface CaptureViewProps {
   user: AbsUser | null;
@@ -97,11 +97,24 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
       const shouldProxySidecar = useProxy && !(isSidecarLocal && isHostedApp);
 
       const fetchUrl = shouldProxySidecar ? '/api/proxy/abs' : sidecarEndpoint;
+      const snippetPayload = {
+        duration,
+        server_url: serverUrl,
+        serverUrl: serverUrl,
+        library_item_id: session?.libraryItemId,
+        libraryItemId: session?.libraryItemId,
+        start_time: computedStart,
+        startTime: computedStart,
+      };
+
       const fetchOptions: RequestInit = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(shouldProxySidecar ? {} : { Authorization: `Bearer ${activeToken}` }),
+          ...(shouldProxySidecar ? {} : { 
+            Authorization: `Bearer ${activeToken}`,
+            'X-ABS-Server-Url': serverUrl,
+          }),
         },
         body: JSON.stringify(
           shouldProxySidecar
@@ -111,10 +124,11 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
                 headers: {
                   Authorization: `Bearer ${activeToken}`,
                   'Content-Type': 'application/json',
+                  'X-ABS-Server-Url': serverUrl,
                 },
-                body: { duration },
+                body: snippetPayload,
               }
-            : { duration }
+            : snippetPayload
         ),
       };
 
@@ -132,7 +146,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
         const snippetResult: Snippet = {
           id: `${snip.book_title || session.bookTitle}-${ts}`,
           bookTitle: snip.book_title || session.bookTitle,
-          author: snip.author || session.author,
+          author: formatAuthors(snip.author, session.author),
           chapterName: snip.chapter || session.chapterName,
           timestamp: ts,
           startTime: snip.start_time ?? computedStart,
@@ -158,7 +172,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
         const snippetResult: Snippet = {
           id: `${snip.book_title}-${ts}`,
           bookTitle: snip.book_title,
-          author: snip.author,
+          author: formatAuthors(snip.author, session.author),
           chapterName: snip.chapter,
           timestamp: ts,
           startTime: snip.start_time,
@@ -367,7 +381,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
 
             <div className="p-3.5 bg-[#151515] border border-neutral-700 space-y-1">
               <span className="text-neutral-500 block text-[10px] uppercase font-semibold">Author(s)</span>
-              <span className="text-neutral-200 text-sm block">{session.author}</span>
+              <span className="text-neutral-200 text-sm block">{formatAuthors(session.author)}</span>
             </div>
 
             <div className="p-3.5 bg-[#151515] border border-neutral-700 space-y-1">

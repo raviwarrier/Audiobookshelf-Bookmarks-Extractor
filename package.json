@@ -14,6 +14,7 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
+    "setup": "bash ./setup.sh",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

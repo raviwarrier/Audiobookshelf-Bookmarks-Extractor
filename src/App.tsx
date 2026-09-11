@@ -5,7 +5,7 @@ import { SnippetsView } from './components/SnippetsView';
 import { AuthModal } from './components/AuthModal';
 import { AbsUser, AbsActiveSession, Snippet } from './types';
 import { wipeSessionKey } from './lib/crypto';
-import { authenticateAbs, fetchActiveSession } from './lib/absClient';
+import { authenticateAbs, fetchActiveSession, formatAuthors } from './lib/absClient';
 
 // Initial sample snippets to demonstrate library structure
 const INITIAL_SNIPPETS: Snippet[] = [
@@ -116,7 +116,10 @@ export function App() {
           body: JSON.stringify({
             targetUrl: endpoint,
             method: 'GET',
-            headers: { 'Authorization': `Bearer ${token}` }
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'X-ABS-Server-Url': serverUrl,
+            }
           })
         });
         const json = await res.json();
@@ -124,7 +127,7 @@ export function App() {
           const sidecarBookmarks: Snippet[] = json.data.bookmarks.map((b: any) => ({
             id: b.id || `b-${b.timestamp}`,
             bookTitle: b.book_title,
-            author: b.author,
+            author: formatAuthors(b.author, b.authors, b.authorName),
             chapterName: b.chapter,
             timestamp: b.timestamp,
             startTime: b.start_time,
@@ -144,7 +147,10 @@ export function App() {
         }
       } else {
         const res = await fetch(endpoint, {
-          headers: { 'Authorization': `Bearer ${token}` }
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'X-ABS-Server-Url': serverUrl,
+          }
         });
         if (res.ok) {
           const data = await res.json();
@@ -152,7 +158,7 @@ export function App() {
             const sidecarBookmarks: Snippet[] = data.bookmarks.map((b: any) => ({
               id: b.id || `b-${b.timestamp}`,
               bookTitle: b.book_title,
-              author: b.author,
+              author: formatAuthors(b.author, b.authors, b.authorName),
               chapterName: b.chapter,
               timestamp: b.timestamp,
               startTime: b.start_time,

@@ -24,8 +24,17 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-6xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         {/* App Title */}
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 border border-neutral-700 bg-neutral-900 flex items-center justify-center font-bold text-white text-sm">
-            ABS
+          <div className="w-8 h-8 rounded border border-neutral-700 bg-[#141414] flex items-center justify-center shrink-0 p-1">
+            <img
+              src="/abs-logo-dark.svg"
+              alt="Audiobookshelf Bookmarks Manager"
+              className="w-full h-full object-contain hidden dark:block"
+            />
+            <img
+              src="/abs-logo-light.svg"
+              alt="Audiobookshelf Bookmarks Manager"
+              className="w-full h-full object-contain block dark:hidden"
+            />
           </div>
           <div>
             <h1 className="text-sm md:text-base font-semibold tracking-tight text-white">

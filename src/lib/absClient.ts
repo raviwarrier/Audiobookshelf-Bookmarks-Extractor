@@ -14,6 +14,66 @@ function normalizeServerUrl(url: string): string {
 }
 
 /**
+ * Safely format author/authors from Audiobookshelf API responses.
+ * ABS returns authors in multiple possible structures:
+ * - Array of objects: [{ id: "...", name: "Author Name" }]
+ * - Array of strings: ["Author Name"]
+ * - Single string: "Author Name"
+ * - Single object: { name: "Author Name" }
+ * - authorName or displayAuthor strings
+ */
+export function formatAuthors(
+  authors: unknown,
+  fallbackAuthor?: unknown,
+  fallbackAuthorName?: unknown,
+  displayAuthor?: unknown
+): string {
+  if (Array.isArray(authors) && authors.length > 0) {
+    const names = authors
+      .map((a: unknown) => {
+        if (typeof a === 'string') return a.trim();
+        if (a && typeof a === 'object' && a !== null) {
+          const obj = a as Record<string, unknown>;
+          const n = obj.name || obj.author || obj.displayName || obj.authorName;
+          if (typeof n === 'string') return n.trim();
+        }
+        return '';
+      })
+      .filter(Boolean);
+    if (names.length > 0) {
+      return names.join(', ');
+    }
+  }
+
+  if (typeof authors === 'string' && authors.trim()) {
+    return authors.trim();
+  }
+
+  if (authors && typeof authors === 'object' && authors !== null) {
+    const obj = authors as Record<string, unknown>;
+    const n = obj.name || obj.author || obj.displayName || obj.authorName;
+    if (typeof n === 'string' && n.trim()) return n.trim();
+  }
+
+  if (typeof fallbackAuthorName === 'string' && fallbackAuthorName.trim()) {
+    return fallbackAuthorName.trim();
+  }
+  if (typeof fallbackAuthor === 'string' && fallbackAuthor.trim()) {
+    return fallbackAuthor.trim();
+  }
+  if (fallbackAuthor && typeof fallbackAuthor === 'object' && fallbackAuthor !== null) {
+    const obj = fallbackAuthor as Record<string, unknown>;
+    const n = obj.name || obj.author || obj.displayName;
+    if (typeof n === 'string' && n.trim()) return n.trim();
+  }
+  if (typeof displayAuthor === 'string' && displayAuthor.trim()) {
+    return displayAuthor.trim();
+  }
+
+  return 'Unknown Author';
+}
+
+/**
  * Universal fetch wrapper that can route requests through the local backend proxy
  * (/api/proxy/abs) to completely bypass browser CORS limitations, or direct fetch.
  */
@@ -314,7 +374,7 @@ export async function fetchActiveSession(
               episodeId: latest.episodeId || null,
               bookTitle: meta.title || 'In-Progress Audiobook',
               subtitle: meta.subtitle || '',
-              author: meta.authors?.join(', ') || meta.author || meta.authorName || 'Unknown Author',
+              author: formatAuthors(meta.authors, meta.author, meta.authorName, 'Unknown Author'),
               chapterName: curChapter?.title || curChapter?.name || 'Current Chapter',
               currentTime: curTime,
               audioFilePath: resolveRealAudioFilePath(media, item, null, curTime),
@@ -337,7 +397,12 @@ export async function fetchActiveSession(
 
   let bookTitle = active.mediaMetadata?.title || active.displayTitle || 'Audiobook Title';
   let subtitle = active.mediaMetadata?.subtitle || '';
-  let author = active.mediaMetadata?.authors?.join(', ') || active.mediaMetadata?.author || active.mediaMetadata?.authorName || active.displayAuthor || 'Unknown Author';
+  let author = formatAuthors(
+    active.mediaMetadata?.authors,
+    active.mediaMetadata?.author,
+    active.mediaMetadata?.authorName,
+    active.displayAuthor
+  );
   let chapterName = active.currentChapter?.title || active.currentChapter?.name || 'Current Chapter';
   let audioFilePath = '';
   let duration = active.duration || active.mediaMetadata?.duration;
@@ -362,10 +427,8 @@ export async function fetchActiveSession(
 
         if (meta.title) bookTitle = meta.title;
         if (meta.subtitle) subtitle = meta.subtitle;
-        if (meta.authors?.length) {
-          author = Array.isArray(meta.authors) ? meta.authors.join(', ') : meta.authors;
-        } else if (meta.author || meta.authorName) {
-          author = meta.author || meta.authorName;
+        if (meta.authors || meta.author || meta.authorName) {
+          author = formatAuthors(meta.authors, meta.author, meta.authorName, author);
         }
 
         if (media.duration) duration = media.duration;
@@ -413,7 +476,10 @@ export async function createSnippet(
   sidecarUrl: string,
   token: string,
   duration: number = 60,
-  useProxy: boolean = true
+  useProxy: boolean = true,
+  serverUrl?: string,
+  libraryItemId?: string,
+  startTime?: number
 ): Promise<Snippet> {
   const cleanUrl = sidecarUrl.replace(/\/+$/, '');
 
@@ -424,8 +490,14 @@ export async function createSnippet(
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
+        ...(serverUrl ? { 'X-ABS-Server-Url': serverUrl } : {}),
       },
-      body: { duration },
+      body: {
+        duration,
+        ...(serverUrl ? { server_url: serverUrl, serverUrl } : {}),
+        ...(libraryItemId ? { library_item_id: libraryItemId, libraryItemId } : {}),
+        ...(startTime !== undefined ? { start_time: startTime, startTime } : {}),
+      },
     },
     useProxy
   );
@@ -441,7 +513,7 @@ export async function createSnippet(
   return {
     id: `${snip.book_title}-${snip.timestamp}`,
     bookTitle: snip.book_title,
-    author: snip.author,
+    author: formatAuthors(snip.author, 'Unknown Author'),
     chapterName: snip.chapter,
     timestamp: snip.timestamp,
     startTime: snip.start_time,

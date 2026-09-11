@@ -8,10 +8,16 @@ and manages per-user bookmarks and snippets under {username}/bookmarks.
 import os
 import re
 import json
+import asyncio
 import subprocess
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 import requests
 from fastapi import FastAPI, Request, Header, HTTPException, Depends, Query, Response
@@ -25,20 +31,44 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("abs-sidecar")
 
+# Base directory of the repository (resolves safely regardless of execution directory)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+
+# Automatically load settings from .env file if present in base directory
+env_file = os.path.join(BASE_DIR, ".env")
+if os.path.exists(env_file):
+    try:
+        with open(env_file, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    _k = _k.strip()
+                    _v = _v.strip().strip('"').strip("'")
+                    if _k not in os.environ:
+                        os.environ[_k] = _v
+    except Exception as _e:
+        logger.warning(f"Could not parse .env file: {_e}")
+
 # Configuration from Environment
-ABS_SERVER_URL = os.environ.get("ABS_SERVER_URL", "http://localhost:13378").rstrip("/")
+ABS_TARGET_SERVER = (
+    os.environ.get("ABS_TARGET_SERVER")
+    or os.environ.get("ABS_INTERNAL_URL")
+    or os.environ.get("ABS_SERVER_URL")
+    or "http://localhost:13378"
+).rstrip("/")
+ABS_SERVER_URL = ABS_TARGET_SERVER  # Maintained for backwards compatibility
 VOLUME_DIR = os.environ.get("VOLUME_DIR", os.environ.get("SNIPPETS_DIR", "/data")).rstrip("/")
 SNIPPETS_DIR = VOLUME_DIR  # Kept for backward compatibility
 WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base.en")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+SNIPPET_DURATION = int(os.environ.get("SNIPPET_DURATION", "60"))
+SNIPPET_PRE_ROLL = float(os.environ.get("SNIPPET_PRE_ROLL", "30.0"))
 
 # Ensure main volume directory exists
 os.makedirs(VOLUME_DIR, exist_ok=True)
-
-# Base directory of the repository (resolves safely regardless of execution directory)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 
 # Templates
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
@@ -158,11 +188,83 @@ def sanitize_filename(name: str) -> str:
     return clean or "untitled"
 
 
-def validate_abs_token(token: str) -> Dict[str, Any]:
+def resolve_abs_server_url(
+    req_url: Optional[str] = None,
+    header_url: Optional[str] = None,
+    query_url: Optional[str] = None
+) -> str:
     """
-    Validate the Bearer token with Audiobookshelf via GET {ABS_SERVER_URL}/api/me.
+    Dynamically resolve Audiobookshelf server URL with preference for client-supplied URL.
+    Order of precedence:
+    1. Direct payload parameter (server_url / serverUrl)
+    2. Header (X-ABS-Server-Url, X-Server-Url, X-ABS-URL)
+    3. Query parameter (?server_url=... or ?serverUrl=...)
+    4. ABS_SERVER_URL environment variable
+    5. Default fallback: http://localhost:13378
+    """
+    raw = req_url or header_url or query_url or ABS_SERVER_URL or "http://localhost:13378"
+    raw = str(raw).strip().rstrip("/")
+    if raw and not (raw.startswith("http://") or raw.startswith("https://")):
+        raw = f"http://{raw}"
+    return raw
+
+
+def extract_authors(meta: Any, fallback: str = "Unknown Author") -> str:
+    """
+    Safely extract author names from Audiobookshelf metadata.
+    Handles arrays of author dicts [{'name': '...'}], arrays of strings, single strings, or dicts.
+    Prevents '[object Object]' or Python dict dumps in metadata and API responses.
+    """
+    if not meta:
+        return fallback
+
+    if isinstance(meta, str) and meta.strip():
+        return meta.strip()
+
+    if isinstance(meta, list):
+        names = []
+        for item in meta:
+            if isinstance(item, str) and item.strip():
+                names.append(item.strip())
+            elif isinstance(item, dict):
+                n = item.get("name") or item.get("author") or item.get("displayName") or item.get("authorName")
+                if n and str(n).strip():
+                    names.append(str(n).strip())
+        if names:
+            return ", ".join(names)
+
+    if isinstance(meta, dict):
+        an = meta.get("authorName")
+        if isinstance(an, str) and an.strip():
+            return an.strip()
+
+        authors_field = meta.get("authors")
+        if authors_field:
+            res = extract_authors(authors_field, fallback="")
+            if res:
+                return res
+
+        author_field = meta.get("author")
+        if author_field:
+            res = extract_authors(author_field, fallback="")
+            if res:
+                return res
+
+        disp = meta.get("displayAuthor")
+        if isinstance(disp, str) and disp.strip():
+            return disp.strip()
+
+    return fallback
+
+
+def validate_abs_token(token: str, server_url: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Validate the Bearer token with Audiobookshelf via GET {target_server}/api/me.
+    Uses the dynamically provided server_url if passed, falling back to ABS_SERVER_URL.
     Returns user dict with id and username.
     """
+    target_server = resolve_abs_server_url(req_url=server_url)
+
     if not token:
         raise HTTPException(status_code=401, detail="Missing Authorization token")
 
@@ -176,11 +278,14 @@ def validate_abs_token(token: str) -> Dict[str, Any]:
     }
 
     try:
-        url = f"{ABS_SERVER_URL}/api/me"
+        url = f"{target_server}/api/me"
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code != 200:
-            logger.warning(f"ABS token validation failed with status {resp.status_code}")
-            raise HTTPException(status_code=401, detail="Invalid or expired Audiobookshelf Bearer token")
+            logger.warning(f"ABS token validation failed with status {resp.status_code} at {target_server}")
+            raise HTTPException(
+                status_code=401,
+                detail=f"Invalid or expired Audiobookshelf Bearer token (HTTP {resp.status_code} from {target_server})"
+            )
 
         data = resp.json()
         user_info = data.get("user") if isinstance(data.get("user"), dict) else data
@@ -195,11 +300,15 @@ def validate_abs_token(token: str) -> Dict[str, Any]:
             "id": str(user_id),
             "username": str(username),
             "raw_token": token,
-            "mediaProgress": user_info.get("mediaProgress") or []
+            "mediaProgress": user_info.get("mediaProgress") or [],
+            "server_url": target_server
         }
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error communicating with Audiobookshelf at {ABS_SERVER_URL}: {e}")
-        raise HTTPException(status_code=502, detail=f"Cannot connect to Audiobookshelf server at {ABS_SERVER_URL}: {str(e)}")
+        logger.error(f"Error communicating with Audiobookshelf at {target_server}: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cannot connect to Audiobookshelf server at {target_server}: {str(e)}"
+        )
 
 
 async def extract_token_flexible(
@@ -266,6 +375,10 @@ class SnippetRequest(BaseModel):
     libraryItemId: Optional[str] = None
     title: Optional[str] = None
     token: Optional[str] = None
+    server_url: Optional[str] = None
+    serverUrl: Optional[str] = None
+    abs_server_url: Optional[str] = None
+    absServerUrl: Optional[str] = None
 
 
 def format_bookmarked_duration(seconds: float) -> str:
@@ -277,7 +390,12 @@ def format_bookmarked_duration(seconds: float) -> str:
     return f"{hrs:02d}:{mins:02d}:{secs:02d} ({total_sec} seconds)"
 
 
-def resolve_audio_target(token: str, req: Optional[SnippetRequest] = None, user_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def resolve_audio_target(
+    token: str,
+    req: Optional[SnippetRequest] = None,
+    user_info: Optional[Dict[str, Any]] = None,
+    server_url: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Resolve the target audio file, timestamp, and book metadata.
     Handles:
@@ -286,6 +404,10 @@ def resolve_audio_target(token: str, req: Optional[SnippetRequest] = None, user_
     3. Active listening sessions from GET /api/me/listening-sessions
     4. Fallback to latest mediaProgress from GET /api/me if listening session has timed out
     """
+    target_server = resolve_abs_server_url(
+        req_url=server_url or (req.server_url if req else None) or (req.serverUrl if req else None) or (req.abs_server_url if req else None) or (req.absServerUrl if req else None)
+    )
+
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
@@ -298,7 +420,7 @@ def resolve_audio_target(token: str, req: Optional[SnippetRequest] = None, user_
     # Option A: Bookmark ID specified (e.g. created on ABS Mobile App)
     if target_bookmark_id:
         try:
-            b_url = f"{ABS_SERVER_URL}/api/me/bookmarks"
+            b_url = f"{target_server}/api/me/bookmarks"
             b_resp = requests.get(b_url, headers=headers, timeout=10)
             if b_resp.status_code == 200:
                 b_data = b_resp.json()
@@ -320,7 +442,7 @@ def resolve_audio_target(token: str, req: Optional[SnippetRequest] = None, user_
     chapter_name = "Unknown Chapter"
 
     try:
-        sessions_url = f"{ABS_SERVER_URL}/api/me/listening-sessions"
+        sessions_url = f"{target_server}/api/me/listening-sessions"
         resp = requests.get(sessions_url, headers=headers, timeout=10)
         if resp.status_code == 200:
             sessions_data = resp.json()
@@ -345,14 +467,7 @@ def resolve_audio_target(token: str, req: Optional[SnippetRequest] = None, user_
                 display_title = active_session.get("displayTitle")
                 book_title = media_meta.get("title") or display_title or book_title
                 subtitle = media_meta.get("subtitle") or ""
-
-                author_val = (
-                    media_meta.get("author")
-                    or media_meta.get("authorName")
-                    or media_meta.get("authors")
-                    or author
-                )
-                author = ", ".join(author_val) if isinstance(author_val, list) else str(author_val)
+                author = extract_authors(media_meta, author)
 
                 # Chapters
                 chapters = active_session.get("chapters") or active_session.get("media", {}).get("chapters") or []
@@ -378,7 +493,7 @@ def resolve_audio_target(token: str, req: Optional[SnippetRequest] = None, user_
         progress_list = user_info.get("mediaProgress", []) if user_info else []
         if not progress_list:
             try:
-                me_res = requests.get(f"{ABS_SERVER_URL}/api/me", headers=headers, timeout=10)
+                me_res = requests.get(f"{target_server}/api/me", headers=headers, timeout=10)
                 if me_res.status_code == 200:
                     me_data = me_res.json()
                     user_d = me_data.get("user", {}) if isinstance(me_data.get("user"), dict) else me_data
@@ -408,7 +523,7 @@ def resolve_audio_target(token: str, req: Optional[SnippetRequest] = None, user_
         )
 
     # Resolve book item details and audio file path
-    item_url = f"{ABS_SERVER_URL}/api/items/{library_item_id}?expanded=1"
+    item_url = f"{target_server}/api/items/{library_item_id}?expanded=1"
     try:
         item_resp = requests.get(item_url, headers=headers, timeout=10)
         if item_resp.status_code == 200:
@@ -421,9 +536,7 @@ def resolve_audio_target(token: str, req: Optional[SnippetRequest] = None, user_
             if not subtitle:
                 subtitle = meta.get("subtitle") or ""
             if author == "Unknown Author":
-                author_val = meta.get("authorName") or meta.get("author") or meta.get("authors")
-                if author_val:
-                    author = ", ".join(author_val) if isinstance(author_val, list) else str(author_val)
+                author = extract_authors(meta, author)
 
             # Match chapter if still unknown
             if chapter_name == "Unknown Chapter":
@@ -475,7 +588,8 @@ def resolve_audio_target(token: str, req: Optional[SnippetRequest] = None, user_
         "book_title": book_title,
         "subtitle": subtitle,
         "author": author,
-        "chapter_name": chapter_name
+        "chapter_name": chapter_name,
+        "startOffset": af_start if 'af_start' in locals() else 0.0
     }
 
 
@@ -497,55 +611,105 @@ def parse_frontmatter(content: str) -> Dict[str, Any]:
     return data
 
 
-# --- API Routes (Callable by Native Android Kotlin App, Web App, and external tools) ---
+# --- Core Audio Extraction & Transcription Logic (Thread-Safe & Shared) ---
 
-@app.post("/api/snippet")
-@app.post("/api/extract")
-@app.post("/api/bookmark/extract")
-async def create_snippet_or_bookmark(
-    request: Request,
-    payload: Optional[SnippetRequest] = None,
-    raw_token: str = Depends(extract_token_flexible)
-):
+def process_bookmark_extraction(
+    library_item_id: Optional[str] = None,
+    bookmark_data: Optional[Dict[str, Any]] = None,
+    auth_token: Optional[str] = None,
+    server_url: Optional[str] = None,
+    duration: Optional[int] = None,
+    snippet_request: Optional[SnippetRequest] = None,
+    user_info: Optional[Dict[str, Any]] = None,
+    custom_start: Optional[float] = None,
+    **kwargs
+) -> Dict[str, Any]:
     """
-    Extracts an audio snippet and transcribes it.
-    Can be called by:
-    - Native Android Kotlin App (via button press when creating/syncing a bookmark)
-    - Web Dashboard
-    - Automation webhooks or curl
+    Core extraction function that handles audio clipping (ffmpeg), speech transcription
+    (faster-whisper with Vosk fallback), and snippet metadata generation/storage.
 
-    Creates a dedicated folder under the main volume folder:
-    /data/{username}/bookmarks/{book_title}/
+    Called synchronously by manual UI/API endpoints and asynchronously by the
+    middleware bookmark interceptor background worker.
     """
-    # 1. Authenticate user against ABS server
-    user = validate_abs_token(raw_token)
+    # 1. Resolve auth token and server URL if attached to bookmark data
+    if bookmark_data and not auth_token:
+        auth_token = bookmark_data.get("_auth_token") or bookmark_data.get("auth_token") or bookmark_data.get("token")
+    if bookmark_data and not server_url:
+        server_url = bookmark_data.get("_server_url") or bookmark_data.get("server_url")
+
+    target_server = resolve_abs_server_url(req_url=server_url)
+
+    # 2. Authenticate user against ABS server if not already provided
+    user = user_info
+    if not user and auth_token:
+        try:
+            user = validate_abs_token(auth_token, server_url=target_server)
+        except Exception as e:
+            logger.error(f"Failed to authenticate token during bookmark extraction: {e}")
+            raise e
+
+    if not user:
+        raise ValueError("Cannot extract bookmark: No authenticated user could be verified.")
+
     user_id = user["id"]
     username = user["username"]
     safe_username = sanitize_filename(username)
 
-    # 2. Resolve target session & offset
-    session_state = resolve_audio_target(raw_token, payload, user)
+    effective_duration = duration or (snippet_request.duration if snippet_request else None) or SNIPPET_DURATION
+
+    # 3. Build or normalize snippet request
+    if snippet_request is None:
+        b_id = bookmark_data.get("id") if bookmark_data else None
+        b_time = None
+        if bookmark_data:
+            b_time = bookmark_data.get("time")
+            if b_time is None:
+                b_time = bookmark_data.get("start_time") or bookmark_data.get("startTime") or bookmark_data.get("offset")
+
+        lib_id = library_item_id or (bookmark_data.get("libraryItemId") if bookmark_data else None)
+        snippet_request = SnippetRequest(
+            library_item_id=str(lib_id) if lib_id else None,
+            start_time=float(b_time) if b_time is not None else None,
+            bookmark_id=str(b_id) if b_id else None,
+            duration=effective_duration,
+            server_url=target_server
+        )
+
+    # 4. Resolve target audio file, book metadata, and timestamp
+    session_state = resolve_audio_target(
+        token=auth_token or user.get("raw_token") or "",
+        req=snippet_request,
+        user_info=user,
+        server_url=target_server
+    )
     current_time = session_state["currentTime"]
     file_path = session_state["file_path"]
     book_title = session_state["book_title"]
     subtitle = session_state.get("subtitle") or ""
     author = session_state["author"]
     chapter_name = session_state["chapter_name"]
-    library_item_id = session_state["libraryItemId"]
+    resolved_lib_item_id = session_state["libraryItemId"]
+    start_offset = float(session_state.get("startOffset") or 0.0)
 
-    # Combine book title and sub-title if available
+    # Combine book title and subtitle if applicable
     if subtitle and subtitle.strip() and subtitle.strip().lower() not in book_title.lower():
         full_book_title = f"{book_title}: {subtitle.strip()}"
     else:
         full_book_title = book_title
 
-    # 3. Parameters
-    duration = payload.duration if payload and payload.duration else 60
-    custom_start = (payload.start_time or payload.startTime or payload.offset) if payload else None
-    start_time = float(custom_start) if custom_start is not None else max(0.0, current_time - 30.0)
+    # 5. Compute time window
+    # For bookmark events, window is centered around the bookmark timestamp (e.g. -30s to +30s)
+    if custom_start is not None:
+        start_time = float(custom_start)
+    elif snippet_request and (snippet_request.start_time is not None or snippet_request.startTime is not None) and not bookmark_data:
+        start_time = float(snippet_request.start_time or snippet_request.startTime)
+    else:
+        file_relative_offset = max(0.0, current_time - start_offset)
+        start_time = max(0.0, file_relative_offset - SNIPPET_PRE_ROLL)
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # 4. User-Specific Volume Folder Structure:
+    # 6. User-Specific Volume Folder Structure:
     # {VOLUME_DIR}/{username}/bookmarks/{safe_book_title}/
     safe_book_title = sanitize_filename(book_title)
     output_dir = os.path.join(VOLUME_DIR, safe_username, "bookmarks", safe_book_title)
@@ -555,13 +719,13 @@ async def create_snippet_or_bookmark(
     output_md = os.path.join(output_dir, f"{timestamp}.md")
     output_json = os.path.join(output_dir, f"{timestamp}.json")
 
-    # 5. ffmpeg Subprocess Call
+    # 7. ffmpeg Subprocess Call
     ffmpeg_cmd = [
         "ffmpeg",
         "-y",
         "-ss", str(start_time),
         "-i", file_path,
-        "-t", str(duration),
+        "-t", str(effective_duration),
         "-c", "copy",
         output_mp3
     ]
@@ -570,7 +734,7 @@ async def create_snippet_or_bookmark(
     try:
         proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
 
-        # If -c copy fails (e.g., input audio is AAC/m4b and output is .mp3), fallback to mp3 re-encoding
+        # Fallback to mp3 re-encoding if -c copy fails
         if proc.returncode != 0 or not os.path.exists(output_mp3) or os.path.getsize(output_mp3) == 0:
             logger.warning(f"ffmpeg -c copy failed (code {proc.returncode}). Retrying with mp3 re-encoding...")
             fallback_cmd = [
@@ -578,7 +742,7 @@ async def create_snippet_or_bookmark(
                 "-y",
                 "-ss", str(start_time),
                 "-i", file_path,
-                "-t", str(duration),
+                "-t", str(effective_duration),
                 "-vn",
                 "-c:a", "libmp3lame",
                 "-q:a", "2",
@@ -587,14 +751,13 @@ async def create_snippet_or_bookmark(
             proc2 = subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
             if proc2.returncode != 0:
                 logger.error(f"ffmpeg fallback failed: {proc2.stderr}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"ffmpeg audio extraction failed: {proc2.stderr[-300:] if proc2.stderr else 'Unknown error'}"
+                raise RuntimeError(
+                    f"ffmpeg audio extraction failed: {proc2.stderr[-300:] if proc2.stderr else 'Unknown error'}"
                 )
     except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="ffmpeg is not installed or not found on the host system PATH")
+        raise RuntimeError("ffmpeg is not installed or not found on the host system PATH")
 
-    # 6. Transcription (faster-whisper primary with Vosk backup)
+    # 8. Transcription (faster-whisper primary with Vosk backup)
     transcript_body = ""
     engine_used = "faster-whisper"
     try:
@@ -615,18 +778,10 @@ async def create_snippet_or_bookmark(
             transcript_body = f"[Transcription failed: Whisper ({str(whisper_err)}); Vosk ({str(vosk_err)})]"
             engine_used = "failed"
 
-    # 7. Format Metadata Header & Write Markdown file with YAML frontmatter
-    # Metadata included at start of text:
-    # - date / time (of bookmarking)
-    # - book title: sub-title (if any)
-    # - author(s) name
-    # - bookmarked duration in HH:MM:SS (SSSS seconds) format
-    # - snippet length
-    # - Chapter number/name (if available)
-    # - transcribed text
+    # 9. Format Metadata Header & Markdown with frontmatter
     formatted_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     bookmarked_duration_formatted = format_bookmarked_duration(current_time)
-    snippet_length_formatted = f"{int(round(duration))} seconds"
+    snippet_length_formatted = f"{int(round(effective_duration))} seconds"
     chapter_display = chapter_name if (chapter_name and chapter_name != "Unknown Chapter") else "N/A"
 
     meta_header = (
@@ -648,9 +803,9 @@ date_time: "{formatted_datetime}"
 current_time: {current_time}
 bookmarked_duration: "{bookmarked_duration_formatted}"
 start_time: {start_time}
-duration: {duration}
+duration: {effective_duration}
 snippet_length: "{snippet_length_formatted}"
-library_item_id: "{library_item_id}"
+library_item_id: "{resolved_lib_item_id}"
 user_id: "{user_id}"
 username: "{username}"
 transcription_engine: "{engine_used}"
@@ -669,7 +824,7 @@ transcription_engine: "{engine_used}"
     with open(output_md, "w", encoding="utf-8") as f:
         f.write(md_content)
 
-    # 8. Write JSON metadata file for Android app sync and quick indexing
+    # 10. Write JSON metadata file for indexing
     meta_content = {
         "id": f"{safe_book_title}-{timestamp}",
         "book_title": full_book_title,
@@ -680,9 +835,9 @@ transcription_engine: "{engine_used}"
         "start_time": start_time,
         "current_time": current_time,
         "bookmarked_duration": bookmarked_duration_formatted,
-        "duration": duration,
+        "duration": effective_duration,
         "snippet_length": snippet_length_formatted,
-        "library_item_id": library_item_id,
+        "library_item_id": resolved_lib_item_id,
         "user_id": user_id,
         "username": username,
         "transcript": full_transcript,
@@ -694,6 +849,8 @@ transcription_engine: "{engine_used}"
     }
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(meta_content, f, indent=2)
+
+    logger.info(f"Successfully processed bookmark extraction for '{full_book_title}' [{timestamp}] by user '{username}'")
 
     return {
         "status": "success",
@@ -713,7 +870,7 @@ transcription_engine: "{engine_used}"
             "start_time": start_time,
             "current_time": current_time,
             "bookmarked_duration": bookmarked_duration_formatted,
-            "duration": duration,
+            "duration": effective_duration,
             "snippet_length": snippet_length_formatted,
             "mp3_file": output_mp3,
             "md_file": output_md,
@@ -725,16 +882,183 @@ transcription_engine: "{engine_used}"
     }
 
 
+# --- Middleware Interceptor Proxy: Automated Event-Driven Bookmark Capture ---
+
+@app.post("/api/me/item/{library_item_id}/bookmark")
+@app.post("/api/me/item/{library_item_id}/bookmark/")
+@app.post("/api/items/{library_item_id}/bookmark")
+async def intercept_bookmark_create(library_item_id: str, request: Request):
+    """
+    Transparent Middleware Interceptor for Audiobookshelf bookmark creation.
+    Forwards bookmark creation requests to the underlying ABS server (ABS_TARGET_SERVER).
+    When ABS responds with 200/201, immediately triggers asynchronous background extraction
+    and returns the original ABS response without delaying client playback or UI.
+    """
+    body_bytes = await request.body()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    headers.pop("content-length", None)
+
+    target_server = resolve_abs_server_url(
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url"),
+        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+    )
+
+    # Extract auth token from incoming request
+    auth_token = None
+    auth_header = request.headers.get("authorization") or request.headers.get("x-abs-token")
+    if auth_header:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            auth_token = parts[1].strip()
+        elif len(parts) == 1:
+            auth_token = parts[0].strip()
+        else:
+            auth_token = auth_header.strip()
+
+    target_url = f"{target_server}/api/me/item/{library_item_id}/bookmark"
+    if request.url.query:
+        target_url = f"{target_url}?{request.url.query}"
+
+    logger.info(f"Intercepting bookmark create for item '{library_item_id}' -> forwarding to {target_url}")
+
+    abs_response = None
+    try:
+        if httpx is not None:
+            async with httpx.AsyncClient() as client:
+                abs_response = await client.post(
+                    target_url,
+                    content=body_bytes,
+                    headers=headers,
+                    timeout=15.0
+                )
+        else:
+            def _sync_post():
+                return requests.post(target_url, data=body_bytes, headers=headers, timeout=15.0)
+            abs_response = await asyncio.to_thread(_sync_post)
+    except Exception as e:
+        logger.error(f"Failed to forward bookmark request to ABS ({target_url}): {e}")
+        return Response(
+            content=json.dumps({"detail": f"Failed to connect to ABS server at {target_server}: {str(e)}"}),
+            status_code=502,
+            media_type="application/json"
+        )
+
+    # If ABS created the bookmark successfully (200 OK or 201 Created)
+    if abs_response.status_code in (200, 201):
+        try:
+            bookmark_data = abs_response.json()
+        except Exception:
+            bookmark_data = {}
+
+        # Merge fields from request body if missing in ABS response
+        try:
+            body_json = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            if isinstance(body_json, dict):
+                for k, v in body_json.items():
+                    if k not in bookmark_data:
+                        bookmark_data[k] = v
+        except Exception:
+            pass
+
+        # Attach auth token and server url to bookmark_data for worker task
+        if auth_token:
+            bookmark_data["_auth_token"] = auth_token
+        if target_server:
+            bookmark_data["_server_url"] = target_server
+
+        logger.info(f"ABS bookmark created successfully: {bookmark_data}. Spawning background extraction worker...")
+
+        # Asynchronous non-blocking background queue task
+        def _safe_background_task():
+            try:
+                process_bookmark_extraction(
+                    library_item_id=library_item_id,
+                    bookmark_data=bookmark_data,
+                    auth_token=auth_token,
+                    server_url=target_server
+                )
+            except Exception as bg_err:
+                logger.error(f"Background extraction failed for bookmark on item '{library_item_id}': {bg_err}", exc_info=True)
+
+        asyncio.create_task(asyncio.to_thread(_safe_background_task))
+    else:
+        logger.warning(f"ABS returned HTTP {abs_response.status_code} for bookmark creation: {abs_response.text}")
+
+    # Return the native ABS response to client immediately
+    excluded_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+    resp_headers = {
+        k: v for k, v in abs_response.headers.items()
+        if k.lower() not in excluded_headers
+    }
+
+    return Response(
+        content=abs_response.content,
+        status_code=abs_response.status_code,
+        headers=resp_headers
+    )
+
+
+# --- Manual Trigger & API Endpoints (Android Kotlin App, Web App, Automation) ---
+
+@app.post("/api/snippet")
+@app.post("/api/extract")
+@app.post("/api/bookmark/extract")
+async def create_snippet_or_bookmark(
+    request: Request,
+    payload: Optional[SnippetRequest] = None,
+    raw_token: str = Depends(extract_token_flexible)
+):
+    """
+    Extracts an audio snippet and transcribes it synchronously upon explicit request.
+    Can be called by:
+    - Native Android Kotlin App (via manual button press when creating/syncing a bookmark)
+    - Web Dashboard
+    - Automation webhooks or curl
+    """
+    server_url = resolve_abs_server_url(
+        req_url=(payload.server_url or payload.serverUrl or payload.abs_server_url or payload.absServerUrl) if payload else None,
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url") or request.headers.get("X-ABS-URL"),
+        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+    )
+    user = validate_abs_token(raw_token, server_url=server_url)
+
+    custom_start = (payload.start_time or payload.startTime or payload.offset) if payload else None
+    duration = payload.duration if payload and payload.duration else SNIPPET_DURATION
+
+    try:
+        result = process_bookmark_extraction(
+            library_item_id=payload.library_item_id if payload else None,
+            auth_token=raw_token,
+            server_url=server_url,
+            duration=duration,
+            snippet_request=payload,
+            user_info=user,
+            custom_start=float(custom_start) if custom_start is not None else None
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during snippet extraction: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/user/bookmarks")
 @app.get("/api/snippets")
 async def get_user_bookmarks(
+    request: Request,
     raw_token: str = Depends(extract_token_flexible)
 ):
     """
     JSON API endpoint callable by the Native Android Kotlin app and Web UI.
     Returns all bookmarks, clips, and transcripts belonging strictly to the authenticated user.
     """
-    user = validate_abs_token(raw_token)
+    server_url = resolve_abs_server_url(
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url") or request.headers.get("X-ABS-URL"),
+        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+    )
+    user = validate_abs_token(raw_token, server_url=server_url)
     username = user["username"]
     safe_username = sanitize_filename(username)
     user_id = user["id"]
@@ -940,9 +1264,14 @@ async def web_dashboard(
     user = None
     error_msg = None
 
+    server_url = resolve_abs_server_url(
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url"),
+        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+    )
+
     if auth_token:
         try:
-            user = validate_abs_token(auth_token)
+            user = validate_abs_token(auth_token, server_url=server_url)
         except HTTPException as e:
             error_msg = e.detail
             auth_token = None
@@ -1039,10 +1368,81 @@ async def health_check():
     }
 
 
+# --- Transparent Catch-All Proxy Route for Audiobookshelf ---
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def proxy_catch_all(path: str, request: Request):
+    """
+    Catch-all reverse proxy that transparently forwards all unhandled API requests,
+    auth checks, library queries, and audio streams to the configured Audiobookshelf server (ABS_TARGET_SERVER).
+    """
+    target_server = resolve_abs_server_url(
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url"),
+        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+    )
+    target_url = f"{target_server}/{path.lstrip('/')}"
+    if request.url.query:
+        target_url = f"{target_url}?{request.url.query}"
+
+    body_bytes = await request.body()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    headers.pop("content-length", None)
+
+    try:
+        if httpx is not None:
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                abs_resp = await client.request(
+                    method=request.method,
+                    url=target_url,
+                    content=body_bytes if body_bytes else None,
+                    headers=headers,
+                    timeout=60.0
+                )
+                excluded_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+                resp_headers = {
+                    k: v for k, v in abs_resp.headers.items()
+                    if k.lower() not in excluded_headers
+                }
+                return Response(
+                    content=abs_resp.content,
+                    status_code=abs_resp.status_code,
+                    headers=resp_headers
+                )
+        else:
+            def _sync_req():
+                return requests.request(
+                    method=request.method,
+                    url=target_url,
+                    data=body_bytes if body_bytes else None,
+                    headers=headers,
+                    timeout=60.0,
+                    allow_redirects=True
+                )
+            abs_resp = await asyncio.to_thread(_sync_req)
+            excluded_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+            resp_headers = {
+                k: v for k, v in abs_resp.headers.items()
+                if k.lower() not in excluded_headers
+            }
+            return Response(
+                content=abs_resp.content,
+                status_code=abs_resp.status_code,
+                headers=resp_headers
+            )
+    except Exception as e:
+        logger.error(f"Proxy catch-all error: {request.method} {target_url} failed: {e}")
+        return Response(
+            content=json.dumps({"detail": f"Proxy communication error with ABS server at {target_server}: {str(e)}"}),
+            status_code=502,
+            media_type="application/json"
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
-    # Default sidecar port is 13380 (13379 is reserved for the web UI server)
-    port = int(os.environ.get("PORT", os.environ.get("SIDECAR_PORT", "13380")))
+    # Default sidecar port is 13380 (SIDECAR_PORT is prioritized over PORT so it does not conflict if PORT is set to 13379 for the web dashboard)
+    port = int(os.environ.get("SIDECAR_PORT") or os.environ.get("PORT") or "13380")
     # Do not reload by default to avoid watching parent directories (e.g. /home/pi)
     reload_enabled = os.environ.get("RELOAD", "false").lower() in ("true", "1", "yes")
     uvicorn.run(

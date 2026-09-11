@@ -72,20 +72,69 @@ Here is a simple step-by-step instruction that you can share with your users on 
 
 ---
 
-## Installation
+## Ports & Network Architecture
 
-Default ports:
-- **Web UI & Express Server**: `13379`
-- **FastAPI Audio Sidecar**: `13380`
+The application is carefully configured to avoid port conflicts with existing homelab services and your Audiobookshelf server:
+
+| Port | Service | Default Component | Purpose & Description |
+| :--- | :--- | :--- | :--- |
+| **`13378`** | **Audiobookshelf Server (Target Only)** | External ABS Instance | **ABS Default Port**: Used strictly as the *target destination* URL for the sidecar and web proxy to connect to Audiobookshelf. **The extractor never listens or binds to port 13378.** |
+| **`13380`** *(or `13377`)* | **FastAPI Sidecar & Interceptor Proxy** | Python Backend (`abs-extractor-sidecar`) | **Primary API & Interceptor Port**: Slices audio (`ffmpeg`), runs AI transcription (faster-whisper/Vosk), and intercepts bookmark events (`POST /api/me/item/:id/bookmark`). Also transparently relays all other ABS traffic (`/{path:path}`) to the upstream ABS server. |
+| **`13379`** *(or `13376`)* | **Web Dashboard & Server-Side Proxy** | Node.js / Express (`abs-extractor-web`) | **User Interface & CORS Proxy**: Hosts the web dashboard, listening session visualizer, integrated audio player, and transcript reader. Relays API calls through `/api/proxy/abs` to bypass browser CORS restrictions. |
+| **`3000` & `8080`** | *(Developer & Cloud Ingress Only)* | Dev Containers | **Not used on your production host server**: Port 8080 has been removed from `Dockerfile`, and port 3000 is reserved only for local development (`npm run dev`). On your production host server, only `13379` and `13380` (or your custom chosen ports) are used. |
+
+---
+
+## Interactive Setup Wizard (CLI)
+
+The repository includes an interactive configuration wizard that guides you through setting your Audiobookshelf URL, storage directory (`VOLUME_DIR`), and network ports:
+
+```bash
+# Run anytime after cloning (or to reconfigure later):
+./setup.sh
+
+# Or via npm:
+npm run setup
+
+# Or via Python:
+python3 setup.py
+```
+
+The wizard prompts you for:
+1. **Audiobookshelf Target Server URL** (e.g. `http://localhost:13378` or `http://audiobookshelf:80`)
+2. **Bookmarks & Volume Storage Directory** (`VOLUME_DIR`, e.g. `/srv/ssd/Appdata/local/bookmarks` or `./bookmarks`)
+3. **Audiobooks Media Library Directory** (Host path for read-only mount)
+4. **FastAPI Sidecar Port** (default `13380`, or alternative `13377`; validates that `13378` is not used)
+5. **Web Dashboard Port** (default `13379`, or alternative `13376`)
+6. **Whisper Transcription Model** (`base.en`, `tiny.en`, `small.en`, or `medium.en`)
+
+It writes a local `.env` file with restrictive permissions (`600`) and automatically ensures that the file is protected by `.gitignore`.
+
+---
+
+## Privacy & Security: Secrets & Environment Protection
+
+All configuration values, server URLs, credentials, and storage directories you configure are protected:
+- **Strictly Git-Ignored**: `.env`, `.env.*`, `credentials*`, and `*token*` are declared in `.gitignore`.
+- **No Secrets in Code**: The repository only tracks `.env.example` with dummy template values. Your actual `.env` will never be pushed or committed to Git.
+- **Media & Transcripts Privacy**: Extracted audio clips (`.mp3`), transcripts (`.md`), and JSON metadata in `bookmarks/` and `data/` are also strictly git-ignored.
+
+---
+
+## Installation
 
 ### 1. Docker (Recommended)
 
-Clone the repository and run via Docker Compose (FFmpeg, Whisper, and Vosk dependencies are automatically containerized):
+Clone the repository and run the setup wizard to configure your directories and ports:
 
 ```bash
 git clone https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor.git
 cd Audiobookshelf-Bookmarks-Extractor
 
+# Run interactive configuration
+./setup.sh
+
+# Start containers
 docker compose up -d --build
 ```
 
@@ -117,6 +166,7 @@ npm run dev
 
 The project includes an `ecosystem.config.cjs` configuration that manages both the web server (`abs-extractor-web` on port 13379) and the Python sidecar (`abs-extractor-sidecar` on port 13380). Paths are dynamically resolved so it runs from any installation directory.
 
+#### Option A: Running directly from the cloned repository
 ```bash
 # 1. Install required system tools (FFmpeg & Python venv)
 sudo apt-get update && sudo apt-get install -y ffmpeg python3-venv
@@ -140,6 +190,59 @@ pm2 save
 
 # Optional: To start on boot
 pm2 startup
+```
+
+#### Option B: Integrating into an existing central PM2 configuration (e.g. `/home/pi/ecosystem.config.js`)
+If you manage multiple services using a master ecosystem file in your home directory or another location, set the `cwd` parameter to your app directory (e.g. `/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor`):
+
+```javascript
+const path = require('path');
+
+// Set the directory where Audiobookshelf-Bookmarks-Extractor is cloned
+const absDir = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor';
+const absVenvPython = path.join(absDir, 'venv', 'bin', 'python3');
+
+module.exports = {
+  apps: [
+    // Your existing applications...
+
+    // Audiobookshelf Bookmarks Extractor Web UI
+    {
+      name: 'abs-extractor-web',
+      cwd: absDir,
+      script: path.join(absDir, 'dist', 'server.cjs'),
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '500M',
+      env: {
+        NODE_ENV: 'production',
+        PORT: 13379
+      }
+    },
+
+    // Audiobookshelf Bookmarks Extractor Python Sidecar
+    {
+      name: 'abs-extractor-sidecar',
+      cwd: absDir,
+      script: path.join(absDir, 'main.py'),
+      interpreter: fs.existsSync(absVenvPython) ? absVenvPython : 'python3',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '1G',
+      env: {
+        PORT: 13380,
+        RELOAD: 'false',
+        ABS_SERVER_URL: 'http://localhost:13378' // Change to your ABS host/port if needed
+      }
+    }
+  ]
+};
+```
+Then start or reload only these apps without disrupting your other services:
+```bash
+pm2 restart ecosystem.config.js --only abs-extractor-web,abs-extractor-sidecar --update-env
 ```
 
 ---
@@ -242,6 +345,61 @@ your-abs-domain.com {
    - `Access-Control-Allow-Origin`: `*`
    - `Access-Control-Allow-Methods`: `GET, POST, OPTIONS, PUT, DELETE`
    - `Access-Control-Allow-Headers`: `Authorization, Content-Type, Accept`
+
+---
+
+## Event-Driven Automated Bookmark Capture (Middleware Interceptor Proxy)
+
+The sidecar supports **automated, event-driven audio clipping and transcription** via a transparent middleware interceptor proxy.
+
+### How It Works
+Since Audiobookshelf does not emit native WebSocket events when a bookmark is created, the sidecar acts as a transparent reverse proxy for Audiobookshelf:
+1. Point your reverse proxy, DNS, or ABS mobile client to the sidecar (e.g. port `13380` or via your reverse proxy).
+2. When the ABS mobile app creates a bookmark via `POST /api/me/item/{library_item_id}/bookmark`, the sidecar interceptor forwards the request directly to the backend ABS server (`ABS_TARGET_SERVER`).
+3. The original ABS response is immediately returned to the mobile app with zero delay.
+4. Concurrently, a background non-blocking worker (`process_bookmark_extraction`) clips the audio around the bookmark timestamp (`-x`/`+x` seconds) using `ffmpeg` and runs Whisper / Vosk speech-to-text transcription.
+5. All other API requests, streams, and sessions are seamlessly relayed to Audiobookshelf via the catch-all transparent proxy route (`/{path:path}`).
+6. Existing manual triggers (`/api/snippet`, `/api/extract`, web dashboard) continue to function identically.
+
+### Network Flow Diagram
+```
+[ ABS Mobile App / Client ]
+           │
+           ▼
+[ FastAPI Sidecar (Port 13380) ]
+   ├── POST /api/me/item/:id/bookmark ──────┐
+   │     │ (immediate async return)         │
+   │     ▼                                  ▼
+   │   Forward request to              Spawns non-blocking
+   │   ABS_TARGET_SERVER (Port 13378)   Background Worker:
+   │                                    - ffmpeg audio slice
+   │                                    - Whisper/Vosk transcript
+   │                                    - Saves to /data/{user}/bookmarks/
+   │
+   └── All Other Routes (/{path:path}) ────► Relayed transparently to ABS
+```
+
+---
+
+## Configuration & Environment Variables
+
+All settings can be specified in a `.env` file, in `docker-compose.yml`, or in `ecosystem.config.cjs`:
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `ABS_TARGET_SERVER` | `http://localhost:13378` | **Upstream Audiobookshelf Server**: The internal or external HTTP URL of your Audiobookshelf server (e.g. `http://audiobookshelf:80` in Docker). |
+| `ABS_SERVER_URL` | `http://localhost:13378` | Backward-compatible fallback for `ABS_TARGET_SERVER`. |
+| `PORT` | `13379` (Web) / `13380` (Sidecar) | Port on which the respective service listens. In PM2 / production, Express runs on `13379` and FastAPI on `13380`. In Vite dev mode, dev preview binds to `3000`. |
+| `SIDECAR_PORT` | `13380` | Explicit override port for the FastAPI sidecar. |
+| `VOLUME_DIR` | `/data` | Root output directory where generated audio clips (`.mp3`), transcripts (`.md`), and metadata (`.json`) are stored in `{username}/bookmarks/{book_title}/`. |
+| `SNIPPETS_DIR` | `/data` | Backward-compatible alias for `VOLUME_DIR`. |
+| `SNIPPET_DURATION` | `60` | Total length (in seconds) of the extracted audio snippet around the bookmark. |
+| `SNIPPET_PRE_ROLL` | `30.0` | Number of seconds before the bookmark timestamp to begin the extracted audio clip. For a 60s duration with 30s pre-roll, the snippet captures `[bookmark - 30s]` to `[bookmark + 30s]`. |
+| `WHISPER_MODEL` | `base.en` | Model size for faster-whisper (`tiny.en`, `base.en`, `small.en`, `medium.en`). Defaults to `base.en` for fast, accurate English transcription on CPUs. |
+| `WHISPER_DEVICE` | `cpu` | Device for Whisper speech recognition (`cpu` or `cuda`). |
+| `WHISPER_COMPUTE_TYPE` | `int8` | Inference quantization (`int8`, `float16`, `float32`). `int8` offers high performance with low memory footprint on CPU and Raspberry Pi. |
+| `VOSK_MODEL_NAME` | `vosk-model-small-en-us-0.15` | Backup lightweight speech recognition model used if Whisper fails. |
+| `RELOAD` | `false` | Enable live-reload for uvicorn development mode (`true`/`false`). Keep `false` in production. |
 
 ---
 
