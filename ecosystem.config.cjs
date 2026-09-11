@@ -13,8 +13,8 @@
 // ==============================================================================
 
 // --- Configure your installation paths here ---
-const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor';
-const PYTHON_PATH = `${APP_DIR}/venv/bin/python3`; // Set to 'python3' if not using a venv
+const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor'; //path to where you have installed the app
+const PYTHON_PATH = `python3`; // Set to 'python3' if not using a venv
 
 module.exports = {
   apps: [
@@ -42,7 +42,7 @@ module.exports = {
         PORT: 13380, // Sidecar & Interceptor proxy port
         SIDECAR_PORT: 13380,
         ABS_TARGET_SERVER: 'http://localhost:13378', // Your Audiobookshelf server URL
-        VOLUME_DIR: '/srv/ssd/Appdata/local/bookmarks' // Output directory for bookmarks
+        VOLUME_DIR: '/srv/ssd/Bookshelf/advplyr-bookshelf/bookmarks' // Output directory for bookmarks
       }
     }
   ]
