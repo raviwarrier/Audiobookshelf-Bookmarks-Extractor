@@ -164,14 +164,14 @@ npm run dev
 
 ### 3. PM2 (Process Manager)
 
-The project includes an `ecosystem.config.cjs` configuration that manages both the web server (`abs-extractor-web` on port 13379) and the Python sidecar (`abs-extractor-sidecar` on port 13380). Paths are dynamically resolved so it runs from any installation directory.
+The project includes an `ecosystem.config.cjs` template with simple placeholder paths and `exec_mode: 'fork'`. This avoids any fragile path-guessing code, works cleanly whether placed in the repo or inside a central folder like `/home/pi`, and eliminates unnecessary clustering overhead.
 
-#### Option A: Running directly from the cloned repository
+#### Quick Setup:
 ```bash
 # 1. Install required system tools (FFmpeg & Python venv)
 sudo apt-get update && sudo apt-get install -y ffmpeg python3-venv
 
-# 2. Clone repository
+# 2. Clone repository (example path: /srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor)
 git clone https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor.git
 cd Audiobookshelf-Bookmarks-Extractor
 
@@ -183,66 +183,60 @@ pip install -r requirements.txt
 # 4. Install Node dependencies and build frontend
 npm install
 npm run build
-
-# 5. Start all services using PM2 Ecosystem
-pm2 start ecosystem.config.cjs
-pm2 save
-
-# Optional: To start on boot
-pm2 startup
 ```
 
-#### Option B: Integrating into an existing central PM2 configuration (e.g. `/home/pi/ecosystem.config.js`)
-If you manage multiple services using a master ecosystem file in your home directory or another location, set the `cwd` parameter to your app directory (e.g. `/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor`):
+#### Configuring `ecosystem.config.cjs`:
+Open `ecosystem.config.cjs` (either in the app directory or in `/home/pi/ecosystem.config.cjs`) and configure the placeholder paths at the top:
 
 ```javascript
-const path = require('path');
-
-// Set the directory where Audiobookshelf-Bookmarks-Extractor is cloned
-const absDir = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor';
-const absVenvPython = path.join(absDir, 'venv', 'bin', 'python3');
+// --- Configure your installation paths here ---
+const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor';
+const PYTHON_PATH = `${APP_DIR}/venv/bin/python3`; // Set to 'python3' if not using a venv
 
 module.exports = {
   apps: [
-    // Your existing applications...
-
-    // Audiobookshelf Bookmarks Extractor Web UI
+    // 1. Web Dashboard & Server-Side Proxy
     {
       name: 'abs-extractor-web',
-      cwd: absDir,
-      script: path.join(absDir, 'dist', 'server.cjs'),
-      instances: 1,
+      cwd: APP_DIR,
+      script: `${APP_DIR}/dist/server.cjs`,
+      exec_mode: 'fork',
       autorestart: true,
-      watch: false,
-      max_memory_restart: '500M',
       env: {
         NODE_ENV: 'production',
-        PORT: 13379
+        PORT: 13379 // Web UI port
       }
     },
-
-    // Audiobookshelf Bookmarks Extractor Python Sidecar
+    // 2. Python Audio Slicing & Transcription Sidecar
     {
       name: 'abs-extractor-sidecar',
-      cwd: absDir,
-      script: path.join(absDir, 'main.py'),
-      interpreter: fs.existsSync(absVenvPython) ? absVenvPython : 'python3',
-      instances: 1,
+      cwd: APP_DIR,
+      script: `${APP_DIR}/main.py`,
+      interpreter: PYTHON_PATH,
+      exec_mode: 'fork',
       autorestart: true,
-      watch: false,
-      max_memory_restart: '1G',
       env: {
-        PORT: 13380,
-        RELOAD: 'false',
-        ABS_SERVER_URL: 'http://localhost:13378' // Change to your ABS host/port if needed
+        PORT: 13380, // Sidecar & Interceptor proxy port
+        SIDECAR_PORT: 13380,
+        ABS_TARGET_SERVER: 'http://localhost:13378', // Your Audiobookshelf server URL
+        VOLUME_DIR: '/srv/ssd/Appdata/local/bookmarks' // Output directory for bookmarks
       }
     }
   ]
 };
 ```
-Then start or reload only these apps without disrupting your other services:
+
+#### Starting & Managing with PM2:
 ```bash
-pm2 restart ecosystem.config.js --only abs-extractor-web,abs-extractor-sidecar --update-env
+# Start all services using PM2 Ecosystem
+pm2 start ecosystem.config.cjs
+pm2 save
+
+# Optional: To restart only these two apps if adding to an existing PM2 list in /home/pi:
+pm2 restart ecosystem.config.cjs --only abs-extractor-web,abs-extractor-sidecar --update-env
+
+# Optional: To start on boot
+pm2 startup
 ```
 
 ---

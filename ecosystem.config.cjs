@@ -1,68 +1,48 @@
-const path = require('path');
-const fs = require('fs');
+// ==============================================================================
+// PM2 Ecosystem Configuration for Audiobookshelf Bookmarks Extractor
+// ==============================================================================
+// Instructions:
+// 1. Set APP_DIR to the directory where this repository is installed.
+//    Example: '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor'
+// 2. Set PYTHON_PATH to your virtual environment's python3 or system 'python3'.
+//    Example: '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor/venv/bin/python3'
+// 3. Set VOLUME_DIR to where audio clips and transcripts should be saved.
+//    Example: '/srv/ssd/Appdata/local/bookmarks'
+// 4. Set ABS_TARGET_SERVER to your Audiobookshelf server URL.
+//    Example: 'http://localhost:13378'
+// ==============================================================================
 
-// Allow overriding the installation directory via ABS_EXTRACTOR_DIR or default to this directory
-const appDir = process.env.ABS_EXTRACTOR_DIR || __dirname;
-
-// Attempt to read .env file if present in app directory
-const envPath = path.join(appDir, '.env');
-if (fs.existsSync(envPath)) {
-  try {
-    require('dotenv').config({ path: envPath });
-  } catch {
-    const lines = fs.readFileSync(envPath, 'utf8').split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
-        const [k, ...v] = trimmed.split('=');
-        const key = k.trim();
-        const val = v.join('=').trim().replace(/^['"]|['"]$/g, '');
-        if (!process.env[key]) process.env[key] = val;
-      }
-    }
-  }
-}
-
-// Detect python virtual environment inside the app directory or fallback to system python
-const venvCandidates = [
-  path.join(appDir, 'venv', 'bin', 'python3'),
-  path.join(appDir, '.venv', 'bin', 'python3'),
-  path.join(appDir, 'venv', 'bin', 'python'),
-];
-const detectedPython = venvCandidates.find(p => fs.existsSync(p));
-const pythonInterpreter = detectedPython || 'python3';
+// --- Configure your installation paths here ---
+const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor';
+const PYTHON_PATH = `${APP_DIR}/venv/bin/python3`; // Set to 'python3' if not using a venv
 
 module.exports = {
   apps: [
+    // 1. Web Dashboard & Server-Side Proxy
     {
       name: 'abs-extractor-web',
-      cwd: appDir,
-      script: path.join(appDir, 'dist', 'server.cjs'),
-      instances: 1,
+      cwd: APP_DIR,
+      script: `${APP_DIR}/dist/server.cjs`,
+      exec_mode: 'fork',
       autorestart: true,
-      watch: false,
-      max_memory_restart: '500M',
       env: {
         NODE_ENV: 'production',
-        PORT: process.env.PORT || 13379
+        PORT: 13379 // Web UI port
       }
     },
+    // 2. Python Audio Slicing & Transcription Sidecar
     {
       name: 'abs-extractor-sidecar',
-      cwd: appDir,
-      script: path.join(appDir, 'main.py'),
-      interpreter: pythonInterpreter,
-      instances: 1,
+      cwd: APP_DIR,
+      script: `${APP_DIR}/main.py`,
+      interpreter: PYTHON_PATH,
+      exec_mode: 'fork',
       autorestart: true,
-      watch: false,
-      max_memory_restart: '1G',
       env: {
-        PORT: process.env.SIDECAR_PORT || 13380,
-        SIDECAR_PORT: process.env.SIDECAR_PORT || 13380,
-        RELOAD: 'false',
-        ABS_TARGET_SERVER: process.env.ABS_TARGET_SERVER || process.env.ABS_SERVER_URL || 'http://localhost:13378',
-        ABS_SERVER_URL: process.env.ABS_TARGET_SERVER || process.env.ABS_SERVER_URL || 'http://localhost:13378',
-        VOLUME_DIR: process.env.VOLUME_DIR || process.env.SNIPPETS_DIR || '/data'
+        PORT: 13380, // Sidecar & Interceptor proxy port
+        SIDECAR_PORT: 13380,
+        ABS_TARGET_SERVER: 'http://localhost:13378', // Your Audiobookshelf server URL
+        VOLUME_DIR: '/srv/ssd/Appdata/local/bookmarks' // Output directory for bookmarks
       }
     }
   ]
