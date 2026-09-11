@@ -8,6 +8,7 @@ and manages per-user bookmarks and snippets under {username}/bookmarks.
 import os
 import re
 import json
+import shutil
 import asyncio
 import subprocess
 import logging
@@ -136,6 +137,45 @@ def get_vosk_model():
     return _vosk_model
 
 
+def get_ffmpeg_bin() -> str:
+    """
+    Finds the ffmpeg executable across system PATH, standard Unix paths,
+    or optional portable Python binary (handles restricted PM2/service PATH).
+    """
+    # 1. System PATH
+    bin_path = shutil.which("ffmpeg")
+    if bin_path:
+        return bin_path
+
+    # 2. Standard Linux/macOS binary paths
+    common_paths = [
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/bin/ffmpeg",
+        "/opt/homebrew/bin/ffmpeg",
+        "/snap/bin/ffmpeg",
+        os.path.join(BASE_DIR, "bin", "ffmpeg"),
+        os.path.join(os.path.expanduser("~"), "bin", "ffmpeg"),
+    ]
+    for p in common_paths:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+
+    # 3. Check if imageio_ffmpeg is installed
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.isfile(exe):
+            return exe
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "ffmpeg is not installed or not found on the host system PATH. "
+        "Please install ffmpeg on your host system: sudo apt update && sudo apt install -y ffmpeg"
+    )
+
+
 def transcribe_with_vosk(audio_file_path: str) -> str:
     """
     Transcribe audio with Vosk backup engine.
@@ -147,8 +187,9 @@ def transcribe_with_vosk(audio_file_path: str) -> str:
     vosk_model = get_vosk_model()
     wav_path = audio_file_path + ".vosk_temp.wav"
     try:
+        ffmpeg_bin = get_ffmpeg_bin()
         cmd = [
-            "ffmpeg", "-y", "-i", audio_file_path,
+            ffmpeg_bin, "-y", "-i", audio_file_path,
             "-ar", "16000", "-ac", "1", "-f", "wav", wav_path
         ]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -720,8 +761,9 @@ def process_bookmark_extraction(
     output_json = os.path.join(output_dir, f"{timestamp}.json")
 
     # 7. ffmpeg Subprocess Call
+    ffmpeg_bin = get_ffmpeg_bin()
     ffmpeg_cmd = [
-        "ffmpeg",
+        ffmpeg_bin,
         "-y",
         "-ss", str(start_time),
         "-i", file_path,
@@ -738,7 +780,7 @@ def process_bookmark_extraction(
         if proc.returncode != 0 or not os.path.exists(output_mp3) or os.path.getsize(output_mp3) == 0:
             logger.warning(f"ffmpeg -c copy failed (code {proc.returncode}). Retrying with mp3 re-encoding...")
             fallback_cmd = [
-                "ffmpeg",
+                ffmpeg_bin,
                 "-y",
                 "-ss", str(start_time),
                 "-i", file_path,
@@ -755,7 +797,10 @@ def process_bookmark_extraction(
                     f"ffmpeg audio extraction failed: {proc2.stderr[-300:] if proc2.stderr else 'Unknown error'}"
                 )
     except FileNotFoundError:
-        raise RuntimeError("ffmpeg is not installed or not found on the host system PATH")
+        raise RuntimeError(
+            "ffmpeg is not installed or not found on the host system PATH. "
+            "Please install ffmpeg on your host system: sudo apt update && sudo apt install -y ffmpeg"
+        )
 
     # 8. Transcription (faster-whisper primary with Vosk backup)
     transcript_body = ""

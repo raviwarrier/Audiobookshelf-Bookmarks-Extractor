@@ -15,6 +15,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "setup": "bash ./setup.sh",
+    "update": "bash ./update.sh",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
