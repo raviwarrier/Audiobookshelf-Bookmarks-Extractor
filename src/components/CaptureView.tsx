@@ -194,8 +194,8 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
       const msg = err instanceof Error ? err.message : 'Failed to extract snippet from sidecar';
       
       let diagnosticHint = '';
-      if ((sidecarUrl.includes('localhost') || sidecarUrl.includes('[your ip:port')) && typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
-        diagnosticHint = ' Note: Please configure your FastAPI Sidecar URL to "[your ip:port/proxied url]" so it can be reached from your client.';
+      if ((sidecarUrl.includes('localhost') || sidecarUrl.includes('127.0.0.1')) && typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        diagnosticHint = ` Note: Sidecar is set to localhost, but you are accessing from ${window.location.hostname}. Please set FastAPI Sidecar URL to http://${window.location.hostname}:13380.`;
       }
 
       setErrorMsg(`${msg}.${diagnosticHint}`);

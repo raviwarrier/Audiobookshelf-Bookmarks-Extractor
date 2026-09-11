@@ -123,6 +123,18 @@ async function startServer() {
     }
   });
 
+  // System configuration endpoint: provides detected ports & server URLs
+  app.get("/api/config", (req, res) => {
+    const sidecarPort = process.env.SIDECAR_PORT || 13380;
+    const absServer = process.env.ABS_TARGET_SERVER || process.env.ABS_SERVER_URL || "";
+    res.json({
+      ok: true,
+      sidecarPort: Number(sidecarPort) || 13380,
+      absTargetServer: absServer,
+      webPort: PORT,
+    });
+  });
+
   // Health check endpoint
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });

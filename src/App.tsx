@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { CaptureView } from './components/CaptureView';
 import { SnippetsView } from './components/SnippetsView';
@@ -6,6 +6,17 @@ import { AuthModal } from './components/AuthModal';
 import { AbsUser, AbsActiveSession, Snippet } from './types';
 import { wipeSessionKey } from './lib/crypto';
 import { authenticateAbs, fetchActiveSession, formatAuthors } from './lib/absClient';
+
+// Helper to determine initial default sidecar URL
+function getDefaultSidecarUrl(): string {
+  if (typeof window !== 'undefined' && window.location) {
+    const host = window.location.hostname;
+    if (host && host !== 'localhost' && host !== '127.0.0.1' && !host.includes('run.app') && !host.includes('webcontainer')) {
+      return `http://${host}:13380`;
+    }
+  }
+  return 'http://localhost:13380';
+}
 
 // Initial sample snippets to demonstrate library structure
 const INITIAL_SNIPPETS: Snippet[] = [
@@ -83,9 +94,29 @@ export function App() {
   // Single-session in-memory credentials & connection state (never stored to disk/localStorage)
   const [user, setUser] = useState<AbsUser | null>(null);
   const [activeToken, setActiveToken] = useState<string | null>(null);
-  const [serverUrl, setServerUrl] = useState<string>('https://books.raviwarrier.net');
-  const [sidecarUrl, setSidecarUrl] = useState<string>('http://[your ip:port/proxied url]');
+  const [serverUrl, setServerUrl] = useState<string>('http://localhost:13378');
+  const [sidecarUrl, setSidecarUrl] = useState<string>(getDefaultSidecarUrl());
   const [useProxy, setUseProxy] = useState<boolean>(true);
+
+  // Auto-detect server-configured sidecar port or ABS server URL from backend
+  useEffect(() => {
+    fetch('/api/config')
+      .then((res) => res.json())
+      .then((cfg) => {
+        if (cfg?.ok) {
+          if (cfg.sidecarPort) {
+            const host = (typeof window !== 'undefined' && window.location?.hostname && !window.location.hostname.includes('run.app'))
+              ? window.location.hostname
+              : 'localhost';
+            setSidecarUrl(`http://${host}:${cfg.sidecarPort}`);
+          }
+          if (cfg.absTargetServer && cfg.absTargetServer !== 'http://audiobookshelf:80') {
+            setServerUrl(cfg.absTargetServer);
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Active Listening Session
   const [session, setSession] = useState<AbsActiveSession | null>(null);

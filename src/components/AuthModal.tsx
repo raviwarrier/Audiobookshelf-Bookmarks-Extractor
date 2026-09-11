@@ -42,8 +42,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onConnect,
   onDisconnect,
 }) => {
-  const [serverUrl, setServerUrl] = useState(currentServerUrl);
-  const [sidecarUrl, setSidecarUrl] = useState(currentSidecarUrl);
+  // Compute default sidecar URL based on client host or standard 13380
+  const clientHost = typeof window !== 'undefined' && window.location?.hostname ? window.location.hostname : 'localhost';
+  const isCloudHost = clientHost.includes('run.app') || clientHost.includes('webcontainer');
+  const defaultLocalSidecar = (!isCloudHost && clientHost !== 'localhost' && clientHost !== '127.0.0.1')
+    ? `http://${clientHost}:13380`
+    : 'http://localhost:13380';
+
+  const [serverUrl, setServerUrl] = useState(currentServerUrl || 'http://localhost:13378');
+  const [sidecarUrl, setSidecarUrl] = useState(
+    currentSidecarUrl && !currentSidecarUrl.includes('[your ip:port') ? currentSidecarUrl : defaultLocalSidecar
+  );
   const [useProxy, setUseProxy] = useState(currentUseProxy);
   const [authMode, setAuthMode] = useState<'token' | 'userpass'>('token');
 
@@ -55,11 +64,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    setServerUrl(currentServerUrl);
-    setSidecarUrl(currentSidecarUrl);
+    setServerUrl(currentServerUrl || 'http://localhost:13378');
+    if (!currentSidecarUrl || currentSidecarUrl.includes('[your ip:port')) {
+      setSidecarUrl(defaultLocalSidecar);
+    } else {
+      setSidecarUrl(currentSidecarUrl);
+    }
     setUseProxy(currentUseProxy);
     setErrorMsg(null);
-  }, [isOpen, currentServerUrl, currentSidecarUrl, currentUseProxy]);
+  }, [isOpen, currentServerUrl, currentSidecarUrl, currentUseProxy, defaultLocalSidecar]);
 
   if (!isOpen) return null;
 
@@ -179,31 +192,68 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           {/* Server & Sidecar URLs */}
           <div className="space-y-3">
             <div>
-              <label className="block text-xs font-medium text-neutral-300 mb-1">
-                Audiobookshelf Server URL
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-medium text-neutral-300">
+                  Audiobookshelf Server URL
+                </label>
+                <div className="flex items-center gap-1.5 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setServerUrl('http://localhost:13378')}
+                    className="text-neutral-400 hover:text-white underline cursor-pointer"
+                  >
+                    Default (http://localhost:13378)
+                  </button>
+                </div>
+              </div>
               <input
                 type="url"
                 required
                 value={serverUrl}
                 onChange={(e) => setServerUrl(e.target.value)}
-                placeholder="https://books.raviwarrier.net"
-                className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors"
+                placeholder="http://localhost:13378 or https://abs.yourdomain.com"
+                className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors font-mono"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-neutral-300 mb-1">
-                FastAPI Sidecar Service URL
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-medium text-neutral-300">
+                  FastAPI Sidecar Service URL
+                </label>
+                <div className="flex items-center gap-1.5 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setSidecarUrl('http://localhost:13380')}
+                    className="text-neutral-400 hover:text-white underline cursor-pointer"
+                  >
+                    Default (13380)
+                  </button>
+                  {!isCloudHost && clientHost !== 'localhost' && clientHost !== '127.0.0.1' && (
+                    <>
+                      <span className="text-neutral-600">|</span>
+                      <button
+                        type="button"
+                        onClick={() => setSidecarUrl(`http://${clientHost}:13380`)}
+                        className="text-neutral-400 hover:text-white underline cursor-pointer"
+                      >
+                        Host IP (13380)
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
               <input
                 type="url"
                 required
                 value={sidecarUrl}
                 onChange={(e) => setSidecarUrl(e.target.value)}
-                placeholder="http://[your ip:port/proxied url]"
-                className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors"
+                placeholder="http://localhost:13380"
+                className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors font-mono"
               />
+              <p className="text-[11px] text-neutral-500 mt-1">
+                Default port is <span className="text-neutral-300">13380</span> (FastAPI audio clipper & transcription proxy).
+              </p>
             </div>
           </div>
 
