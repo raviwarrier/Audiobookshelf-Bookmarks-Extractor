@@ -14,7 +14,7 @@
 
 // --- Configure your installation paths here ---
 const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor'; //path to where you have installed the app
-const PYTHON_PATH = `python3`; // Set to 'python3' if not using a venv
+const PYTHON_PATH = `python3`; // Set to '${APP_DIR}/venv/bin/python3' if using a venv
 
 module.exports = {
   apps: [
