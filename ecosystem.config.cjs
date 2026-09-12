@@ -1,24 +1,28 @@
+const fs = require('fs');
+const path = require('path');
+
 // ==============================================================================
 // PM2 Ecosystem Configuration for Audiobookshelf Bookmarks Extractor
 // ==============================================================================
-// Instructions:
-// 1. Set APP_DIR to the directory where this repository is installed.
-//    Example: '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor'
-// 2. Set PYTHON_PATH to your virtual environment's python3 or system 'python3'.
-//    Example: '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor/venv/bin/python3'
-// 3. Set VOLUME_DIR to where audio clips and transcripts should be saved.
-//    Example: '/srv/ssd/Appdata/local/bookmarks'
-// 4. Set ABS_TARGET_SERVER to your Audiobookshelf server URL.
-//    Example: 'http://localhost:13378'
-// 5. Set AUDIOBOOKS_PATH to your host directory where audiobooks are stored.
-//    Example: '/srv/ssd/Bookshelf/Audiobooks'
-// 6. Set PATH_MAPPINGS if your ABS Docker container uses volume mounts
-//    Example: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries'
+// INSTRUCTIONS FOR USERS:
+// 1. APP_DIR: Absolute path to where this repository is located on your server disk.
+//    Change this if your installation path is different (e.g. '/home/pi/Audiobookshelf-Bookmarks-Extractor').
+// 2. PYTHON_PATH: Absolute path to the Python executable in your virtual environment (venv).
+//    Virtual Environment (venv) is the DEFAULT execution mode for this application.
+//    By default, it uses '${APP_DIR}/venv/bin/python3'.
+//    (The setup and update scripts automatically create this venv for you).
+// 3. VOLUME_DIR: Absolute path to the output directory where audio clips & transcripts are saved.
+// 4. AUDIOBOOKS_PATH: Absolute path to the directory on your host disk where audiobooks reside.
+// 5. PATH_MAPPINGS: Container-to-host path mapping if Audiobookshelf is running in Docker.
 // ==============================================================================
 
-// --- Configure your installation paths here ---
-const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor'; //path to where you have installed the app
-const PYTHON_PATH = `python3`; // Set to '${APP_DIR}/venv/bin/python3' if using a venv
+// --- Configure your installation paths here (Absolute Paths) ---
+const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor'; // Absolute path to the app directory
+const DEFAULT_VENV_PYTHON = path.join(APP_DIR, 'venv', 'bin', 'python3');
+
+// Virtual Environment (venv) is the default mode:
+// Points directly to the absolute path of the venv python3 executable
+const PYTHON_PATH = fs.existsSync(DEFAULT_VENV_PYTHON) ? DEFAULT_VENV_PYTHON : `${APP_DIR}/venv/bin/python3`;
 
 module.exports = {
   apps: [

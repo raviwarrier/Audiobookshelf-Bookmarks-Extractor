@@ -195,6 +195,16 @@ app = FastAPI(
     version="1.0"
 )
 
+@app.on_event("startup")
+async def startup_event():
+    """Pre-warm Whisper model asynchronously on server startup to avoid first-request download lag."""
+    def _warmup():
+        try:
+            get_whisper_model()
+        except Exception as e:
+            logger.warning(f"Whisper background pre-warm encountered: {e}")
+    asyncio.create_task(asyncio.to_thread(_warmup))
+
 # Enable CORS so native mobile apps (Kotlin Android), WebViews, and external clients can call endpoints directly
 app.add_middleware(
     CORSMiddleware,

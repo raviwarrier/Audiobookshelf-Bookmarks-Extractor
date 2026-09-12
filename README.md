@@ -162,36 +162,38 @@ pip install -r requirements.txt
 npm run dev
 ```
 
-### 3. PM2 (Process Manager)
+### 3. PM2 (Process Manager - Recommended for Bare-Metal / Homelab)
 
-The project includes an `ecosystem.config.cjs` template with simple placeholder paths and `exec_mode: 'fork'`. This avoids any fragile path-guessing code, works cleanly whether placed in the repo or inside a central folder like `/home/pi`, and eliminates unnecessary clustering overhead.
+The project includes an `ecosystem.config.cjs` template designed for production hosting using absolute paths and `exec_mode: 'fork'`.
 
-#### Quick Setup:
+> **Note on Virtual Environment (venv)**: **`venv` is the default execution mode** for this project. The setup script (`./setup.sh`) and update script (`./update.sh`) automatically create the virtual environment inside `${APP_DIR}/venv`, install all Python dependencies into it, and configure PM2 to execute directly from that isolated environment.
+
+#### Automated Quick Setup (Recommended):
 ```bash
-# 1. Install required system tools (FFmpeg & Python venv)
-sudo apt-get update && sudo apt-get install -y ffmpeg python3-venv
-
-# 2. Clone repository (example path: /srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor)
+# 1. Clone repository (example path: /srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor)
 git clone https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor.git
 cd Audiobookshelf-Bookmarks-Extractor
 
-# 3. Create Python virtual environment and install dependencies
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# 4. Install Node dependencies and build frontend
-npm install
-npm run build
+# 2. Run the automated installer & updater
+# (This automatically verifies ffmpeg, creates the venv, installs dependencies, and builds the frontend)
+./update.sh
 ```
 
-#### Configuring `ecosystem.config.cjs`:
-Open `ecosystem.config.cjs` (either in the app directory or in `/home/pi/ecosystem.config.cjs`) and configure the placeholder paths at the top:
+#### Configuring `ecosystem.config.cjs` (Absolute Paths):
+Open `ecosystem.config.cjs` to confirm your server's absolute paths:
 
 ```javascript
-// --- Configure your installation paths here ---
+const fs = require('fs');
+const path = require('path');
+
+// --- 1. Installation Directory (Absolute Path) ---
+// Set to the absolute path where you cloned this repository:
 const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor';
-const PYTHON_PATH = `${APP_DIR}/venv/bin/python3`; // Set to 'python3' if not using a venv
+
+// --- 2. Python Virtual Environment (Absolute Path - Default Mode) ---
+// The venv is created automatically by ./setup.sh or ./update.sh at ${APP_DIR}/venv
+const DEFAULT_VENV_PYTHON = path.join(APP_DIR, 'venv', 'bin', 'python3');
+const PYTHON_PATH = fs.existsSync(DEFAULT_VENV_PYTHON) ? DEFAULT_VENV_PYTHON : `${APP_DIR}/venv/bin/python3`;
 
 module.exports = {
   apps: [
@@ -212,14 +214,16 @@ module.exports = {
       name: 'abs-extractor-sidecar',
       cwd: APP_DIR,
       script: `${APP_DIR}/main.py`,
-      interpreter: PYTHON_PATH,
+      interpreter: PYTHON_PATH, // Uses the venv Python binary via absolute path
       exec_mode: 'fork',
       autorestart: true,
       env: {
         PORT: 13380, // Sidecar & Interceptor proxy port
         SIDECAR_PORT: 13380,
         ABS_TARGET_SERVER: 'http://localhost:13378', // Your Audiobookshelf server URL
-        VOLUME_DIR: '/srv/ssd/Appdata/local/bookmarks' // Output directory for bookmarks
+        VOLUME_DIR: '/srv/ssd/Bookshelf/advplyr-bookshelf/bookmarks', // Output directory for bookmarks
+        AUDIOBOOKS_PATH: '/srv/ssd/Bookshelf/Audiobooks', // Host path where your audiobooks reside
+        PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries' // Translates ABS Docker container volume paths to host paths
       }
     }
   ]
@@ -232,10 +236,10 @@ module.exports = {
 pm2 start ecosystem.config.cjs
 pm2 save
 
-# Optional: To restart only these two apps if adding to an existing PM2 list in /home/pi:
-pm2 restart ecosystem.config.cjs --only abs-extractor-web,abs-extractor-sidecar --update-env
+# To restart services after code or configuration updates:
+pm2 restart ecosystem.config.cjs --update-env
 
-# Optional: To start on boot
+# Optional: Configure PM2 to start on system boot
 pm2 startup
 ```
 
@@ -243,35 +247,29 @@ pm2 startup
 
 ## Updating
 
-### 1. Docker
+### 1. Automated (One-Command Update for Host / PM2)
+Simply run the update script, which pulls updates, verifies `ffmpeg`, maintains the `venv`, installs package updates, rebuilds the web UI, and restarts PM2:
+```bash
+./update.sh
+# or: npm run update
+```
+
+### 2. Docker
 ```bash
 git pull origin main
 docker compose down
 docker compose up -d --build
 ```
 
-### 2. NPM
+### 3. Manual Step-by-Step (NPM / PM2)
 ```bash
 git pull origin main
 
-# Ensure system tools are up to date
+# Ensure system ffmpeg is installed
 sudo apt-get update && sudo apt-get install --only-upgrade -y ffmpeg
 
-source venv/bin/activate
-pip install -U -r requirements.txt
-npm install
-npm run build
-```
-
-### 3. PM2
-```bash
-git pull origin main
-
-# Ensure system tools are up to date
-sudo apt-get update && sudo apt-get install --only-upgrade -y ffmpeg
-
-source venv/bin/activate
-pip install -U -r requirements.txt
+# Activate virtual environment and update packages
+./venv/bin/pip install -U -r requirements.txt
 npm install
 npm run build
 pm2 restart ecosystem.config.cjs --update-env

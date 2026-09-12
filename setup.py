@@ -162,10 +162,35 @@ NODE_ENV=production
         if ".env.*" not in gi_content:
             gi_content += ".env.*\n"
             needs_write = True
+        if "venv/" not in gi_content:
+            gi_content += "venv/\n"
+            needs_write = True
         if needs_write:
             with open(gitignore_path, "w", encoding="utf-8") as f:
                 f.write(gi_content)
-        print("   [OK] .env file is strictly ignored in .gitignore (protected from git commits).")
+        print("   [OK] .env and venv are strictly ignored in .gitignore (protected from git commits).")
+
+    # Initialize venv (default mode)
+    venv_dir = os.path.join(base_dir, "venv")
+    venv_py = os.path.join(venv_dir, "bin", "python3") if os.name != "nt" else os.path.join(venv_dir, "Scripts", "python.exe")
+    if not os.path.exists(venv_py):
+        print(f"\n[*] Creating Python virtual environment in {venv_dir}...")
+        import subprocess
+        try:
+            subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True)
+            print(f"   [OK] Virtual environment created at {venv_dir}")
+        except Exception as err:
+            print(f"   [!] Could not auto-create venv: {err}")
+
+    if os.path.exists(venv_py):
+        req_file = os.path.join(base_dir, "requirements.txt")
+        if os.path.exists(req_file):
+            print("   Installing requirements into virtual environment...")
+            try:
+                subprocess.run([venv_py, "-m", "pip", "install", "-r", req_file], check=False)
+                print("   [OK] Requirements installed into venv.")
+            except Exception as e:
+                print(f"   Notice: pip install returned: {e}")
 
     print("\n" + "=" * 65)
     print("   Configuration Complete!")
@@ -174,13 +199,14 @@ NODE_ENV=production
     print(f"  - Target ABS Server: {abs_target}")
     print(f"  - Bookmarks Directory: {vol_dir}")
     print(f"  - Audiobooks Directory: {audiobooks_path}")
+    print(f"  - Python Venv: {venv_py if os.path.exists(venv_py) else sys.executable}")
     print(f"  - Web Dashboard: http://localhost:{web_port}")
     print(f"  - Sidecar / Interceptor: http://localhost:{sidecar_port}")
     print(f"  - Whisper Model: {whisper_model}\n")
     print("Next steps to start:")
     print("  Docker: docker compose up -d")
-    print("  PM2:    npm run build && pm2 start ecosystem.config.cjs")
-    print("  Direct: npm run build && npm start & python3 main.py\n")
+    print("  PM2:    pm2 start ecosystem.config.cjs")
+    print(f"  Direct: npm run build && npm start & {venv_py} main.py\n")
 
 if __name__ == "__main__":
     main()

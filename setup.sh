@@ -185,28 +185,60 @@ if [ -f "$GITIGNORE_FILE" ]; then
     if ! grep -q "^\.env\.\*" "$GITIGNORE_FILE"; then
         echo ".env.*" >> "$GITIGNORE_FILE"
     fi
-    echo -e "   ${GREEN}[OK] .env and credentials are strictly ignored in .gitignore (safe from accidental commits).${NC}"
+    if ! grep -q "^venv/$" "$GITIGNORE_FILE"; then
+        echo "venv/" >> "$GITIGNORE_FILE"
+    fi
+    echo -e "   ${GREEN}[OK] .env and venv are strictly ignored in .gitignore.${NC}"
 fi
 
-# 9. Completion Summary
+# 9. Automatic Virtual Environment (venv is default mode) & Package Setup
+echo -e "\n${BLUE}[*] Initializing Python Virtual Environment (Default Mode)...${NC}"
+VENV_DIR="$SCRIPT_DIR/venv"
+if [ ! -f "$VENV_DIR/bin/python3" ]; then
+    echo -e "   Creating virtual environment at ${CYAN}$VENV_DIR${NC}..."
+    if ! python3 -m venv "$VENV_DIR" 2>/dev/null; then
+        echo -e "   ${YELLOW}python3 -m venv failed. Attempting to install python3-venv via apt...${NC}"
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y python3-venv python3-pip
+            python3 -m venv "$VENV_DIR"
+        fi
+    fi
+fi
+
+if [ -f "$VENV_DIR/bin/python3" ]; then
+    VENV_PYTHON="$VENV_DIR/bin/python3"
+    echo -e "   ${GREEN}✓ Virtualenv ready:${NC} $VENV_PYTHON"
+    echo -e "   Installing Python packages from requirements.txt..."
+    $VENV_PYTHON -m pip install --upgrade pip 2>/dev/null || true
+    $VENV_PYTHON -m pip install -r "$SCRIPT_DIR/requirements.txt"
+    echo -e "   ${GREEN}✓ Python packages installed successfully in venv.${NC}"
+else
+    echo -e "   ${YELLOW}[!] Warning: Could not create venv. Falling back to system python3.${NC}"
+    VENV_PYTHON="python3"
+fi
+
+# 10. Node Dependencies & Build
+if command -v npm &>/dev/null; then
+    echo -e "\n${BLUE}[*] Installing Node dependencies and building web dashboard...${NC}"
+    npm install
+    npm run build
+    echo -e "   ${GREEN}✓ Web dashboard and server compiled to dist/server.cjs.${NC}"
+fi
+
+# 11. Completion Summary
 echo -e "\n${BOLD}${GREEN}=================================================================${NC}"
-echo -e "${BOLD}${GREEN}   Configuration Complete!${NC}"
+echo -e "${BOLD}${GREEN}   Configuration & Installation Complete!${NC}"
 echo -e "${BOLD}${GREEN}=================================================================${NC}\n"
 echo -e "Your configuration has been saved to: ${BOLD}$ENV_FILE${NC}"
-echo -e "  - Target ABS Server: ${CYAN}$ABS_TARGET_SERVER${NC}"
+echo -e "  - Target ABS Server:   ${CYAN}$ABS_TARGET_SERVER${NC}"
 echo -e "  - Bookmarks Directory: ${CYAN}$VOLUME_DIR${NC}"
-echo -e "  - Audiobooks Directory: ${CYAN}$AUDIOBOOKS_PATH${NC}"
-echo -e "  - Web Dashboard: ${GREEN}http://localhost:$WEB_PORT${NC}"
-echo -e "  - Sidecar / Interceptor: ${GREEN}http://localhost:$SIDECAR_PORT${NC}"
-echo -e "  - Whisper Model: ${CYAN}$WHISPER_MODEL${NC}\n"
+echo -e "  - Audiobooks Path:     ${CYAN}$AUDIOBOOKS_PATH${NC}"
+echo -e "  - Python Venv (Abs):   ${CYAN}$VENV_PYTHON${NC}"
+echo -e "  - Web Dashboard Port:  ${GREEN}$WEB_PORT${NC}"
+echo -e "  - Sidecar Proxy Port:  ${GREEN}$SIDECAR_PORT${NC}"
+echo -e "  - Whisper Model:       ${CYAN}$WHISPER_MODEL${NC}\n"
 
-echo -e "${BOLD}Next steps to run on your server:${NC}"
-echo -e "  ${BOLD}Option A (Docker Compose):${NC}"
-echo -e "    docker compose up -d\n"
-echo -e "  ${BOLD}Option B (PM2 Process Manager):${NC}"
-echo -e "    npm run build"
-echo -e "    pm2 start ecosystem.config.cjs\n"
-echo -e "  ${BOLD}Option C (Direct Standalone):${NC}"
-echo -e "    npm run build && npm start &"
-echo -e "    python3 main.py\n"
-echo -e "To reconfigure anytime in the future, simply re-run ${BOLD}./setup.sh${NC} or ${BOLD}npm run setup${NC}.\n"
+echo -e "${BOLD}To start the services with PM2:${NC}"
+echo -e "  ${GREEN}pm2 start ecosystem.config.cjs${NC}"
+echo -e "  ${GREEN}pm2 save${NC}\n"
+echo -e "To update everything in the future with one command, run ${BOLD}./update.sh${NC} (or ${BOLD}npm run update${NC}).\n"

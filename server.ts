@@ -23,6 +23,9 @@ async function startServer() {
   app.post("/api/proxy/abs", async (req, res) => {
     let controller: AbortController | null = null;
     let timeoutId: NodeJS.Timeout | null = null;
+    // Allow up to 300 seconds (5 minutes) for heavy operations such as faster-whisper
+    // model downloading, CPU speech-to-text inference on long audio clips, or cold starts.
+    const PROXY_TIMEOUT_MS = Number(process.env.PROXY_TIMEOUT_MS) || 300000;
 
     try {
       const { targetUrl, method = "GET", headers = {}, body } = req.body;
@@ -56,7 +59,7 @@ async function startServer() {
       safeHeaders["Accept"] = safeHeaders["Accept"] || "*/*";
 
       controller = new AbortController();
-      timeoutId = setTimeout(() => controller?.abort(), 25000);
+      timeoutId = setTimeout(() => controller?.abort(), PROXY_TIMEOUT_MS);
 
       const fetchOptions: RequestInit = {
         method,
@@ -98,7 +101,7 @@ async function startServer() {
 
       let msg = errObj?.message || "Failed to reach remote server";
       if (isTimeout) {
-        msg = "Request timed out after 15 seconds";
+        msg = `Request timed out after ${Math.round(PROXY_TIMEOUT_MS / 1000)} seconds`;
       } else if (causeText) {
         msg = `${msg} (${causeText})`;
       }

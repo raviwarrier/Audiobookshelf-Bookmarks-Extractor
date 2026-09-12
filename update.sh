@@ -44,17 +44,36 @@ else
     fi
 fi
 
-# 2. Python Dependencies
-echo -e "\n${BLUE}[2/4] Installing Python requirements...${NC}"
-PYTHON_BIN="python3"
-if [ -d "venv" ] && [ -f "venv/bin/python3" ]; then
-    PYTHON_BIN="venv/bin/python3"
-    echo -e "   Using virtualenv: ${PYTHON_BIN}"
+# 2. Python Virtual Environment (venv is default mode) & Dependencies
+echo -e "\n${BLUE}[2/4] Setting up Python virtual environment (venv is default)...${NC}"
+VENV_DIR="$SCRIPT_DIR/venv"
+
+if [ ! -f "$VENV_DIR/bin/python3" ]; then
+    echo -e "   Creating Python virtual environment in ${CYAN}$VENV_DIR${NC}..."
+    if ! python3 -m venv "$VENV_DIR" 2>/dev/null; then
+        echo -e "   ${YELLOW}python3 -m venv failed. Checking for python3-venv package...${NC}"
+        if command -v apt-get &>/dev/null; then
+            echo -e "   Running: sudo apt-get update && sudo apt-get install -y python3-venv python3-pip"
+            sudo apt-get update && sudo apt-get install -y python3-venv python3-pip
+            python3 -m venv "$VENV_DIR"
+        else
+            echo -e "   ${RED}[!] Could not create venv. Please ensure python3-venv is installed.${NC}"
+        fi
+    fi
 fi
 
+if [ -f "$VENV_DIR/bin/python3" ]; then
+    PYTHON_BIN="$VENV_DIR/bin/python3"
+    echo -e "   ${GREEN}✓ Using virtual environment:${NC} $PYTHON_BIN"
+else
+    echo -e "   ${YELLOW}[!] Falling back to system python3.${NC}"
+    PYTHON_BIN="python3"
+fi
+
+echo -e "   Installing Python packages from requirements.txt into venv..."
 $PYTHON_BIN -m pip install --upgrade pip 2>/dev/null || true
-$PYTHON_BIN -m pip install -r requirements.txt
-echo -e "   ${GREEN}✓ Python packages installed successfully.${NC}"
+$PYTHON_BIN -m pip install -r "$SCRIPT_DIR/requirements.txt"
+echo -e "   ${GREEN}✓ Python packages installed successfully in venv.${NC}"
 
 # 3. Node Dependencies & Production Build
 echo -e "\n${BLUE}[3/4] Building Web Dashboard & Server Bundle...${NC}"
