@@ -151,6 +151,7 @@ ABS_SERVER_URL="$ABS_TARGET_SERVER"
 VOLUME_DIR="$VOLUME_DIR"
 SNIPPETS_DIR="$VOLUME_DIR"
 AUDIOBOOKS_PATH="$AUDIOBOOKS_PATH"
+PATH_MAPPINGS="/audiobooks:$AUDIOBOOKS_PATH,/summaries:${AUDIOBOOKS_PATH%/Audiobooks}/Summaries"
 
 # Network Ports
 # Web Dashboard & UI Port (Default 13379 or custom e.g. 13376)

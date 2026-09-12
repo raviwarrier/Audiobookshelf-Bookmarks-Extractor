@@ -67,9 +67,123 @@ WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
 SNIPPET_DURATION = int(os.environ.get("SNIPPET_DURATION", "60"))
 SNIPPET_PRE_ROLL = float(os.environ.get("SNIPPET_PRE_ROLL", "30.0"))
+AUDIOBOOKS_PATH = os.environ.get("AUDIOBOOKS_PATH", "").strip().rstrip("/")
+PATH_MAPPINGS = os.environ.get("PATH_MAPPINGS", "").strip()
 
 # Ensure main volume directory exists
 os.makedirs(VOLUME_DIR, exist_ok=True)
+
+
+def map_container_path_to_host(container_path: str, book_title: Optional[str] = None) -> str:
+    """
+    Translates an Audiobookshelf Docker container path (e.g. /audiobooks/... or /summaries/...)
+    to the real host filesystem path when running the sidecar outside Docker (e.g. via PM2 or systemd).
+
+    Resolves paths in order:
+    1. Direct host path existence check.
+    2. Explicit PATH_MAPPINGS (comma-separated 'container:host', e.g. '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries').
+    3. AUDIOBOOKS_PATH environment variable (e.g. '/srv/ssd/Bookshelf/Audiobooks').
+    4. Auto-discovery from VOLUME_DIR ancestors and common media/storage root folders.
+    5. Filename match under candidate libraries.
+    """
+    if not container_path:
+        return container_path
+
+    # 1. Direct host existence
+    if os.path.exists(container_path):
+        return container_path
+
+    # 2. Build mapping table from PATH_MAPPINGS & AUDIOBOOKS_PATH
+    mappings: Dict[str, str] = {}
+    if PATH_MAPPINGS:
+        for pair in PATH_MAPPINGS.split(","):
+            if ":" in pair:
+                c_p, h_p = pair.split(":", 1)
+                mappings[c_p.strip().rstrip("/")] = h_p.strip().rstrip("/")
+
+    if AUDIOBOOKS_PATH and "/audiobooks" not in mappings:
+        mappings["/audiobooks"] = AUDIOBOOKS_PATH
+
+    for c_prefix, h_prefix in mappings.items():
+        if container_path == c_prefix or container_path.startswith(c_prefix + "/"):
+            mapped = h_prefix + container_path[len(c_prefix):]
+            if os.path.exists(mapped):
+                logger.info(f"Mapped container path '{container_path}' -> '{mapped}' (via PATH_MAPPINGS)")
+                return mapped
+
+    # 3. Intelligent auto-discovery from VOLUME_DIR and host directory structure
+    candidate_roots = []
+    if AUDIOBOOKS_PATH:
+        candidate_roots.append(AUDIOBOOKS_PATH)
+
+    # Derive ancestor directories from VOLUME_DIR (e.g. /srv/ssd/Bookshelf/advplyr-bookshelf/bookmarks -> /srv/ssd/Bookshelf)
+    v_dir = os.path.abspath(VOLUME_DIR)
+    curr = v_dir
+    for _ in range(4):
+        curr = os.path.dirname(curr)
+        if curr and curr != "/":
+            candidate_roots.append(curr)
+
+    candidate_roots.extend([
+        "/srv/ssd/Bookshelf",
+        "/srv/ssd/Bookshelf/Audiobooks",
+        "/srv/ssd/Bookshelf/Summaries",
+        "/srv/ssd",
+        "/srv",
+        "/mnt",
+        "/media",
+        "/volume1",
+        "/data"
+    ])
+
+    clean_subpath = container_path.lstrip("/")
+    parts = clean_subpath.split("/", 1)
+    first_part = parts[0] if parts else ""
+    remaining_subpath = parts[1] if len(parts) > 1 else clean_subpath
+
+    container_prefixes = ["audiobooks", "summaries", "podcasts", "books", "calibre", "ebooks", "media"]
+
+    for root in candidate_roots:
+        if not os.path.isdir(root):
+            continue
+
+        # Option A: root + container subpath (e.g. /srv/ssd/Bookshelf + Audiobooks/...)
+        test_a = os.path.join(root, clean_subpath)
+        if os.path.exists(test_a):
+            logger.info(f"Auto-discovered audio file at '{test_a}' (matched clean subpath)")
+            return test_a
+
+        # Option B: root + capitalized/varied prefix (e.g. /srv/ssd/Bookshelf + /Audiobooks/The Spike/...)
+        if first_part.lower() in container_prefixes:
+            for variant in [first_part, first_part.capitalize(), first_part.lower(), "Audiobooks", "Summaries"]:
+                test_b = os.path.join(root, variant, remaining_subpath)
+                if os.path.exists(test_b):
+                    logger.info(f"Auto-discovered audio file at '{test_b}' (matched folder '{variant}')")
+                    return test_b
+
+        # Option C: root + remaining_subpath directly (if root is already the audiobooks folder)
+        test_c = os.path.join(root, remaining_subpath)
+        if os.path.exists(test_c):
+            logger.info(f"Auto-discovered audio file at '{test_c}'")
+            return test_c
+
+    # 4. Search by filename inside candidate library roots
+    filename = os.path.basename(container_path)
+    if filename:
+        for search_base in [AUDIOBOOKS_PATH, "/srv/ssd/Bookshelf/Audiobooks", "/srv/ssd/Bookshelf/Summaries", "/srv/ssd/Bookshelf"]:
+            if search_base and os.path.isdir(search_base):
+                for dirpath, _, filenames in os.walk(search_base):
+                    if filename in filenames:
+                        found = os.path.join(dirpath, filename)
+                        logger.info(f"Found audio file by filename search: '{found}'")
+                        return found
+
+    # Fallback: if AUDIOBOOKS_PATH is set and container path starts with /audiobooks/, return mapped path
+    if AUDIOBOOKS_PATH and container_path.startswith("/audiobooks/"):
+        return AUDIOBOOKS_PATH + container_path[len("/audiobooks"):]
+
+    return container_path
+
 
 # Templates
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
@@ -622,10 +736,26 @@ def resolve_audio_target(
             detail=f"Could not determine source audio file path for library item '{library_item_id}'. Ensure the audio library is mounted."
         )
 
+    # Translate Docker container path (/audiobooks/...) to host system path
+    host_file_path = map_container_path_to_host(file_path, book_title=book_title)
+
+    # Derive direct HTTP stream URL as fallback if file is not accessible on local disk
+    stream_url = None
+    if library_item_id and target_server:
+        file_ino = None
+        if 'selected_file' in locals() and selected_file:
+            file_ino = selected_file.get("ino") or selected_file.get("id")
+        if file_ino:
+            stream_url = f"{target_server}/api/items/{library_item_id}/file/{file_ino}"
+        else:
+            stream_url = f"{target_server}/api/items/{library_item_id}/download"
+
     return {
         "libraryItemId": library_item_id,
         "currentTime": current_time,
-        "file_path": file_path,
+        "file_path": host_file_path,
+        "raw_container_path": file_path,
+        "stream_url": stream_url,
         "book_title": book_title,
         "subtitle": subtitle,
         "author": author,
@@ -725,6 +855,7 @@ def process_bookmark_extraction(
     )
     current_time = session_state["currentTime"]
     file_path = session_state["file_path"]
+    stream_url = session_state.get("stream_url")
     book_title = session_state["book_title"]
     subtitle = session_state.get("subtitle") or ""
     author = session_state["author"]
@@ -762,45 +893,89 @@ def process_bookmark_extraction(
 
     # 7. ffmpeg Subprocess Call
     ffmpeg_bin = get_ffmpeg_bin()
-    ffmpeg_cmd = [
-        ffmpeg_bin,
-        "-y",
-        "-ss", str(start_time),
-        "-i", file_path,
-        "-t", str(effective_duration),
-        "-c", "copy",
-        output_mp3
-    ]
+    use_stream = False
+    input_target = file_path
 
-    logger.info(f"Executing ffmpeg: {' '.join(ffmpeg_cmd)}")
-    try:
-        proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    if not os.path.exists(file_path):
+        logger.warning(f"Audio file '{file_path}' was not found on local host disk.")
+        if stream_url:
+            logger.info(f"Fallback: Slicing audio directly from Audiobookshelf HTTP stream: {stream_url}")
+            input_target = stream_url
+            use_stream = True
+        else:
+            raise RuntimeError(
+                f"Audio file '{file_path}' does not exist on host disk and no stream URL could be resolved. "
+                f"Please verify AUDIOBOOKS_PATH or PATH_MAPPINGS in ecosystem.config.cjs."
+            )
 
-        # Fallback to mp3 re-encoding if -c copy fails
-        if proc.returncode != 0 or not os.path.exists(output_mp3) or os.path.getsize(output_mp3) == 0:
-            logger.warning(f"ffmpeg -c copy failed (code {proc.returncode}). Retrying with mp3 re-encoding...")
-            fallback_cmd = [
-                ffmpeg_bin,
-                "-y",
-                "-ss", str(start_time),
-                "-i", file_path,
-                "-t", str(effective_duration),
-                "-vn",
-                "-c:a", "libmp3lame",
-                "-q:a", "2",
-                output_mp3
-            ]
-            proc2 = subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
-            if proc2.returncode != 0:
-                logger.error(f"ffmpeg fallback failed: {proc2.stderr}")
+    if not use_stream:
+        ffmpeg_cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-ss", str(start_time),
+            "-i", file_path,
+            "-t", str(effective_duration),
+            "-c", "copy",
+            output_mp3
+        ]
+
+        logger.info(f"Executing ffmpeg (local direct copy): {' '.join(ffmpeg_cmd)}")
+        try:
+            proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+
+            # Fallback to mp3 re-encoding if -c copy fails
+            if proc.returncode != 0 or not os.path.exists(output_mp3) or os.path.getsize(output_mp3) == 0:
+                logger.warning(f"ffmpeg -c copy failed (code {proc.returncode}). Retrying with mp3 re-encoding...")
+                fallback_cmd = [
+                    ffmpeg_bin,
+                    "-y",
+                    "-ss", str(start_time),
+                    "-i", file_path,
+                    "-t", str(effective_duration),
+                    "-vn",
+                    "-c:a", "libmp3lame",
+                    "-q:a", "2",
+                    output_mp3
+                ]
+                proc2 = subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                if proc2.returncode != 0:
+                    logger.error(f"ffmpeg fallback failed: {proc2.stderr}")
+                    raise RuntimeError(
+                        f"ffmpeg audio extraction failed: {proc2.stderr[-300:] if proc2.stderr else 'Unknown error'}"
+                    )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "ffmpeg is not installed or not found on the host system PATH. "
+                "Please install ffmpeg on your host system: sudo apt update && sudo apt install -y ffmpeg"
+            )
+    else:
+        # Slicing directly from Audiobookshelf HTTP API stream
+        stream_cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-headers", f"Authorization: Bearer {auth_token}\r\n",
+            "-ss", str(start_time),
+            "-i", input_target,
+            "-t", str(effective_duration),
+            "-vn",
+            "-c:a", "libmp3lame",
+            "-q:a", "2",
+            output_mp3
+        ]
+        logger.info(f"Executing ffmpeg over HTTP stream: {' '.join(stream_cmd)}")
+        try:
+            proc_stream = subprocess.run(stream_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+            if proc_stream.returncode != 0 or not os.path.exists(output_mp3) or os.path.getsize(output_mp3) == 0:
+                logger.error(f"ffmpeg HTTP stream extraction failed: {proc_stream.stderr}")
                 raise RuntimeError(
-                    f"ffmpeg audio extraction failed: {proc2.stderr[-300:] if proc2.stderr else 'Unknown error'}"
+                    f"Local file '{file_path}' was not found and HTTP streaming failed: {proc_stream.stderr[-300:] if proc_stream.stderr else 'Unknown error'}. "
+                    f"Please verify AUDIOBOOKS_PATH in ecosystem.config.cjs."
                 )
-    except FileNotFoundError:
-        raise RuntimeError(
-            "ffmpeg is not installed or not found on the host system PATH. "
-            "Please install ffmpeg on your host system: sudo apt update && sudo apt install -y ffmpeg"
-        )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "ffmpeg is not installed or not found on the host system PATH. "
+                "Please install ffmpeg on your host system: sudo apt update && sudo apt install -y ffmpeg"
+            )
 
     # 8. Transcription (faster-whisper primary with Vosk backup)
     transcript_body = ""

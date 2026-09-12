@@ -10,6 +10,10 @@
 //    Example: '/srv/ssd/Appdata/local/bookmarks'
 // 4. Set ABS_TARGET_SERVER to your Audiobookshelf server URL.
 //    Example: 'http://localhost:13378'
+// 5. Set AUDIOBOOKS_PATH to your host directory where audiobooks are stored.
+//    Example: '/srv/ssd/Bookshelf/Audiobooks'
+// 6. Set PATH_MAPPINGS if your ABS Docker container uses volume mounts
+//    Example: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries'
 // ==============================================================================
 
 // --- Configure your installation paths here ---
@@ -42,7 +46,9 @@ module.exports = {
         PORT: 13380, // Sidecar & Interceptor proxy port
         SIDECAR_PORT: 13380,
         ABS_TARGET_SERVER: 'http://localhost:13378', // Your Audiobookshelf server URL
-        VOLUME_DIR: '/srv/ssd/Bookshelf/advplyr-bookshelf/bookmarks' // Output directory for bookmarks
+        VOLUME_DIR: '/srv/ssd/Bookshelf/advplyr-bookshelf/bookmarks', // Output directory for bookmarks
+        AUDIOBOOKS_PATH: '/srv/ssd/Bookshelf/Audiobooks', // Host path to audiobooks
+        PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries' // Docker container:host directory mappings
       }
     }
   ]
