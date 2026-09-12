@@ -353,6 +353,8 @@ def sanitize_filename(name: str) -> str:
     return clean or "untitled"
 
 
+_last_known_abs_server: Optional[str] = None
+
 def resolve_abs_server_url(
     req_url: Optional[str] = None,
     header_url: Optional[str] = None,
@@ -364,10 +366,29 @@ def resolve_abs_server_url(
     1. Direct payload parameter (server_url / serverUrl)
     2. Header (X-ABS-Server-Url, X-Server-Url, X-ABS-URL)
     3. Query parameter (?server_url=... or ?serverUrl=...)
-    4. ABS_SERVER_URL environment variable
-    5. Default fallback: http://localhost:13378
+    4. ABS_SERVER_URL / ABS_TARGET_SERVER environment variable (if not default localhost)
+    5. Cached last-known remote ABS server address
+    6. Default fallback: http://localhost:13378
     """
-    raw = req_url or header_url or query_url or ABS_SERVER_URL or "http://localhost:13378"
+    global _last_known_abs_server
+    explicit = req_url or header_url or query_url
+    if explicit:
+        clean_exp = str(explicit).strip().rstrip("/")
+        if clean_exp and not (clean_exp.startswith("http://") or clean_exp.startswith("https://")):
+            clean_exp = f"http://{clean_exp}"
+        if "localhost" not in clean_exp and "127.0.0.1" not in clean_exp:
+            _last_known_abs_server = clean_exp
+        return clean_exp
+
+    # Check environment variable first if explicitly set to a non-localhost address
+    if ABS_SERVER_URL and ABS_SERVER_URL.strip() and "localhost:13378" not in ABS_SERVER_URL:
+        return ABS_SERVER_URL.strip().rstrip("/")
+
+    # If environment variable is default localhost but we have observed a remote server (e.g. from web UI)
+    if _last_known_abs_server:
+        return _last_known_abs_server
+
+    raw = ABS_SERVER_URL or "http://localhost:13378"
     raw = str(raw).strip().rstrip("/")
     if raw and not (raw.startswith("http://") or raw.startswith("https://")):
         raw = f"http://{raw}"
@@ -1117,6 +1138,9 @@ transcription_engine: "{engine_used}"
 @app.post("/api/me/item/{library_item_id}/bookmark")
 @app.post("/api/me/item/{library_item_id}/bookmark/")
 @app.post("/api/items/{library_item_id}/bookmark")
+@app.post("/api/items/{library_item_id}/bookmark/")
+@app.post("/api/me/items/{library_item_id}/bookmark")
+@app.post("/api/me/items/{library_item_id}/bookmark/")
 async def intercept_bookmark_create(library_item_id: str, request: Request):
     """
     Transparent Middleware Interceptor for Audiobookshelf bookmark creation.
@@ -1150,12 +1174,17 @@ async def intercept_bookmark_create(library_item_id: str, request: Request):
     if request.url.query:
         target_url = f"{target_url}?{request.url.query}"
 
-    logger.info(f"Intercepting bookmark create for item '{library_item_id}' -> forwarding to {target_url}")
+    print("\n" + "=" * 60, flush=True)
+    print(" [!] INTERCEPTED NEW BOOKMARK EVENT! ", flush=True)
+    print("=" * 60, flush=True)
+    print(f"--> Library Item ID: {library_item_id}", flush=True)
+    print(f"--> Forwarding to ABS: {target_url}", flush=True)
+    print(f"--> Auth Token Present: {bool(auth_token)}", flush=True)
 
     abs_response = None
     try:
         if httpx is not None:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(follow_redirects=True) as client:
                 abs_response = await client.post(
                     target_url,
                     content=body_bytes,
@@ -1164,15 +1193,19 @@ async def intercept_bookmark_create(library_item_id: str, request: Request):
                 )
         else:
             def _sync_post():
-                return requests.post(target_url, data=body_bytes, headers=headers, timeout=15.0)
+                return requests.post(target_url, data=body_bytes, headers=headers, timeout=15.0, allow_redirects=True)
             abs_response = await asyncio.to_thread(_sync_post)
     except Exception as e:
+        print(f"[!] Failed to forward bookmark request to ABS ({target_url}): {e}", flush=True)
+        print("=" * 60 + "\n", flush=True)
         logger.error(f"Failed to forward bookmark request to ABS ({target_url}): {e}")
         return Response(
             content=json.dumps({"detail": f"Failed to connect to ABS server at {target_server}: {str(e)}"}),
             status_code=502,
             media_type="application/json"
         )
+
+    print(f"--> ABS Response Code: {abs_response.status_code}", flush=True)
 
     # If ABS created the bookmark successfully (200 OK or 201 Created)
     if abs_response.status_code in (200, 201):
@@ -1186,7 +1219,7 @@ async def intercept_bookmark_create(library_item_id: str, request: Request):
             body_json = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
             if isinstance(body_json, dict):
                 for k, v in body_json.items():
-                    if k not in bookmark_data:
+                    if k not in bookmark_data or bookmark_data[k] is None:
                         bookmark_data[k] = v
         except Exception:
             pass
@@ -1197,22 +1230,32 @@ async def intercept_bookmark_create(library_item_id: str, request: Request):
         if target_server:
             bookmark_data["_server_url"] = target_server
 
+        print(f"--> Bookmark Time: {bookmark_data.get('time')}", flush=True)
+        print(f"--> Bookmark Title: {bookmark_data.get('title')}", flush=True)
+        print("--> Triggering automated audio extraction & transcription in background...", flush=True)
+        print("=" * 60 + "\n", flush=True)
+
         logger.info(f"ABS bookmark created successfully: {bookmark_data}. Spawning background extraction worker...")
 
         # Asynchronous non-blocking background queue task
         def _safe_background_task():
             try:
-                process_bookmark_extraction(
+                print(f"[*] Worker starting extraction for item '{library_item_id}'...", flush=True)
+                res = process_bookmark_extraction(
                     library_item_id=library_item_id,
                     bookmark_data=bookmark_data,
                     auth_token=auth_token,
                     server_url=target_server
                 )
+                print(f"[✓] Worker finished extraction: {res.get('snippet', {}).get('mp3_file')}", flush=True)
             except Exception as bg_err:
+                print(f"[✗] Worker extraction failed: {bg_err}", flush=True)
                 logger.error(f"Background extraction failed for bookmark on item '{library_item_id}': {bg_err}", exc_info=True)
 
         asyncio.create_task(asyncio.to_thread(_safe_background_task))
     else:
+        print(f"[!] ABS returned non-success HTTP {abs_response.status_code}: {abs_response.text}", flush=True)
+        print("=" * 60 + "\n", flush=True)
         logger.warning(f"ABS returned HTTP {abs_response.status_code} for bookmark creation: {abs_response.text}")
 
     # Return the native ABS response to client immediately
@@ -1227,6 +1270,32 @@ async def intercept_bookmark_create(library_item_id: str, request: Request):
         status_code=abs_response.status_code,
         headers=resp_headers
     )
+
+
+@app.post("/api/me/bookmark")
+@app.post("/api/me/bookmark/")
+@app.post("/api/me/bookmarks")
+@app.post("/api/me/bookmarks/")
+@app.post("/api/bookmarks")
+@app.post("/api/bookmarks/")
+async def intercept_general_bookmark_create(request: Request):
+    """
+    Catch-all interceptor for general bookmark endpoints that might pass libraryItemId in body.
+    """
+    body_bytes = await request.body()
+    lib_id = None
+    try:
+        body_json = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        if isinstance(body_json, dict):
+            lib_id = body_json.get("libraryItemId") or body_json.get("library_item_id") or body_json.get("itemId")
+    except Exception:
+        pass
+
+    if lib_id:
+        return await intercept_bookmark_create(library_item_id=str(lib_id), request=request)
+
+    # Otherwise forward directly via catch-all proxy
+    return await proxy_catch_all(path=request.url.path.lstrip("/"), request=request)
 
 
 # --- Manual Trigger & API Endpoints (Android Kotlin App, Web App, Automation) ---
@@ -1613,6 +1682,9 @@ async def proxy_catch_all(path: str, request: Request):
     target_url = f"{target_server}/{path.lstrip('/')}"
     if request.url.query:
         target_url = f"{target_url}?{request.url.query}"
+
+    if "bookmark" in path.lower():
+        print(f"[!] Proxy catch-all received bookmark request: {request.method} /{path} -> {target_url}", flush=True)
 
     body_bytes = await request.body()
     headers = dict(request.headers)
