@@ -107,9 +107,11 @@ If you are confused about the multiple URLs and ports used in this project, here
 
 | Service Name | Default Port | Variable Name(s) | UI Label | Example Address in Your Setup | What It Does |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1. Audiobookshelf (ABS) Server** | **`13378`** *(or 80 / 443)* | `ABS_TARGET_SERVER`<br>`ABS_SERVER_URL` | **"Audiobookshelf Server URL"** | `https://abs.example.com`<br>`http://192.168.1.100:13378`<br>`http://localhost:13378` | **Your actual media server**. Contains your audiobooks library, user accounts, and playback progress. **This app connects to it as a client/proxy.** |
-| **2. Python Sidecar & Interceptor Proxy** | **`13380`** | `SIDECAR_PORT`<br>`PORT: 13380` | **"Sidecar Backend URL"** | `http://192.168.1.100:13380`<br>`https://abs-sidecar.example.com` | **Audio extractor & transparent reverse proxy**. Slices `.mp3` with FFmpeg, runs Whisper speech-to-text, and intercepts official ABS mobile/web bookmark taps (`POST /api/me/item/:id/bookmark`). |
-| **3. Web Dashboard & UI Proxy** | **`13379`** | `PORT: 13379` | *(Browser Address Bar)* | `http://192.168.1.100:13379`<br>`https://abs-bookmarks.example.com` | **The web frontend**. The browser dashboard where you view listening sessions, browse snippets, listen to audio clips, and read transcripts. |
+| **1. Audiobookshelf (ABS) Server** | **`13378`** *(or 80 / 443)* | `ABS_TARGET_SERVER`<br>`ABS_SERVER_URL` | **"Audiobookshelf Server URL"** | `http://192.168.68.102:13378`<br>`https://abs.example.com` | **Your actual media server (Target only)**. Contains your audiobooks library, accounts, and progress. **The extractor never listens on port 13378; it only connects to it.** |
+| **2. Python Sidecar & Interceptor Proxy** | **`13380`** | `SIDECAR_PORT`<br>`PORT: 13380` | *(Configured by Admin)* | `http://192.168.68.102:13380`<br>`https://abs.example.com` (proxied) | **Audio extractor & transparent reverse proxy**. Slices `.mp3` with FFmpeg, runs Whisper speech-to-text, and intercepts official ABS mobile/web bookmark taps (`POST /api/me/item/:id/bookmark`). |
+| **3. Web Dashboard & UI Proxy** | **`13379`** | `PORT: 13379` | *(Browser Address Bar)* | `http://192.168.68.102:13379`<br>`https://abs-bookmarks.example.com` | **The web frontend**. The browser dashboard where you view listening sessions, browse snippets, listen to audio clips, and read transcripts. |
+
+> **Development Port Note:** Port `3000` is reserved only for local frontend dev preview (`npm run dev`). On your production host server, only `13379` (web) and `13380` (sidecar) are used.
 
 ---
 
@@ -117,15 +119,20 @@ If you are confused about the multiple URLs and ports used in this project, here
 
 > **Question:** *"When you say `ABS_TARGET_SERVER`, which one are you referring to?"*
 
-**Answer:** `ABS_TARGET_SERVER` is **Service #1: your real Audiobookshelf media server** (e.g. `http://192.168.1.100:13378` or `https://abs.example.com`).
+**Answer:** `ABS_TARGET_SERVER` is **Service #1: your real Audiobookshelf media server** (e.g. `http://192.168.68.102:13378` or `https://abs.example.com`).
 
 It is called the "target" because it is the **upstream destination** where the sidecar forwards all proxied requests, queries library data, and verifies user tokens. 
 
+> [!IMPORTANT]
+> **Docker Note (Host IP vs. Localhost):**
+> Since Audiobookshelf is almost always installed as a Docker container, setting `ABS_TARGET_SERVER` to `http://localhost:13378` or `http://127.0.0.1:13378` in `ecosystem.config.cjs` will typically fail with **`Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): All connection attempts failed`**.
+> This happens because host loopback (`127.0.0.1`) often cannot route into Docker container published ports.
+> **Always use your host server's LAN IP** (e.g. `http://192.168.68.102:13378` or your container's network IP) so that the sidecar process can reach your containerized Audiobookshelf server.
+
 - In `ecosystem.config.cjs`:
   ```javascript
-  ABS_TARGET_SERVER: 'http://192.168.1.100:13378' // Point to your real Audiobookshelf instance!
+  ABS_TARGET_SERVER: 'http://192.168.68.102:13378' // Use your host server's LAN IP for Dockerized ABS!
   ```
-- If your ABS server is hosted on the same physical machine as the sidecar, you can use its local IP (`http://192.168.1.100:13378`), localhost, or domain (`https://abs.example.com`).
 
 ---
 
@@ -135,41 +142,28 @@ It is called the "target" because it is the **upstream destination** where the s
 - **What it is:** Your existing Audiobookshelf Docker container or server.
 - **Default Port:** `13378` (or standard HTTPS `443` / HTTP `80` if reverse-proxied).
 - **Names in this project:** `ABS_TARGET_SERVER`, `ABS_SERVER_URL`, or `"Audiobookshelf Server URL"` in the login dialog.
-- **Example URLs:** `https://abs.example.com`, `http://192.168.1.100:13378`, or `http://localhost:13378`.
+- **Example URLs:** `http://192.168.68.102:13378` (Docker host LAN IP) or `https://abs.example.com`.
 - **Purpose:** Stores audiobooks, holds your listening progress, handles user authentication, and stores native bookmarks in its database. **This extractor never replaces this port; it only communicates with it.**
 
 #### 2. Sidecar & Interceptor Proxy (`abs-extractor-sidecar`)
 - **What it is:** The Python FastAPI backend (`main.py`) powered by FFmpeg and Whisper speech-to-text.
 - **Default Port:** `13380`.
-- **Names in this project:** `abs-extractor-sidecar`, `SIDECAR_PORT`, `PORT` (for the python process), or `"Sidecar Backend URL"` in the Web UI.
-- **Example URL:** `http://192.168.1.100:13380` or `https://abs-sidecar.example.com`.
+- **Names in this project:** `abs-extractor-sidecar`, `SIDECAR_PORT`, `PORT` (for the python process).
+- **Example URL:** `http://192.168.68.102:13380` or `https://abs.example.com` (when your public reverse proxy points to 13380).
 - **Purposes:**
   1. **Audio Slicing:** Extracts 60-second audio clips directly from your `.m4b`/`.mp3` files using FFmpeg.
   2. **Speech-to-Text Transcription:** Transcribes the audio into markdown notes using faster-whisper or Vosk.
-  3. **Event-Driven Bookmark Interceptor:** Acts as a transparent reverse proxy for Audiobookshelf. By pointing your reverse proxy (or client server URL) to this address (`http://192.168.1.100:13380` or via your domain `https://abs.example.com`), normal streaming, browsing, and logins pass straight through to ABS, but whenever you tap **Bookmark** in the official app, the sidecar immediately forwards it to ABS and triggers extraction in the background!
+  3. **Event-Driven Bookmark Interceptor:** Acts as a transparent reverse proxy for Audiobookshelf. By pointing your reverse proxy to this address (`http://192.168.68.102:13380` or via your domain `https://abs.example.com`), normal streaming, browsing, and logins pass straight through to ABS, but whenever you tap **Bookmark** in the official app, the sidecar immediately forwards it to ABS and triggers extraction in the background!
   4. **Backend REST API:** Provides endpoints (`/api/snippet`, `/api/user/bookmarks`, `/api/health`) for the Web UI, automated scripts, and external tools.
 
 #### 3. Web Dashboard & UI Server (`abs-extractor-web`)
 - **What it is:** The Node.js/Express server (`server.ts`) hosting the compiled React web interface.
 - **Default Port:** `13379`.
 - **Names in this project:** `abs-extractor-web`, `PORT` (for the node process in `ecosystem.config.cjs`).
-- **Example URL:** `http://192.168.1.100:13379` (which you can reverse proxy as `https://abs-bookmarks.example.com`).
+- **Example URL:** `http://192.168.68.102:13379` (which you can reverse proxy as `https://abs-bookmarks.example.com`).
 - **Purposes:**
   1. **User Interface:** The visual web dashboard accessible from any browser (desktop or mobile) to see your books, chapter bookmarks, listening sessions, and transcriptions.
   2. **Browser CORS Proxy:** Provides an internal route (`/api/proxy/abs`) so your browser can securely communicate with your Audiobookshelf server without triggering CORS blocks.
-
----
-
-## Ports & Network Architecture
-
-The application is carefully configured to avoid port conflicts with existing homelab services and your Audiobookshelf server:
-
-| Port | Service | Default Component | Purpose & Description |
-| :--- | :--- | :--- | :--- |
-| **`13378`** | **Audiobookshelf Server (Target Only)** | External ABS Instance | **ABS Default Port**: Used strictly as the *target destination* URL for the sidecar and web proxy to connect to Audiobookshelf. **The extractor never listens or binds to port 13378.** |
-| **`13380`** | **FastAPI Sidecar & Interceptor Proxy** | Python Backend (`abs-extractor-sidecar`) | **Primary API & Interceptor Port**: Slices audio (`ffmpeg`), runs AI transcription (faster-whisper/Vosk), and intercepts bookmark events (`POST /api/me/item/:id/bookmark`). Also transparently relays all other ABS traffic (`/{path:path}`) to the upstream ABS server. |
-| **`13379`** | **Web Dashboard & Server-Side Proxy** | Node.js / Express (`abs-extractor-web`) | **User Interface & CORS Proxy**: Hosts the web dashboard, listening session visualizer, integrated audio player, and transcript reader. Relays API calls through `/api/proxy/abs` to bypass browser CORS restrictions. |
-| **`3000` & `8080`** | *(Developer & Cloud Ingress Only)* | Dev Containers | **Not used on your production host server**: Port 8080 has been removed from `Dockerfile`, and port 3000 is reserved only for local development (`npm run dev`). On your production host server, only `13379` and `13380` (or your custom chosen ports) are used. |
 
 ---
 

@@ -184,8 +184,8 @@ export async function authenticateAbs(
         const detail = res.data?.detail || res.data?.message || (typeof res.data === 'string' ? res.data : '');
         throw new Error(
           detail
-            ? `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): ${detail}. Ensure your sidecar's ABS_TARGET_SERVER points to your internal Audiobookshelf address (e.g. http://127.0.0.1:13378).`
-            : `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): The proxy or sidecar could not reach Audiobookshelf. Verify that ABS_TARGET_SERVER in your sidecar environment is set to your internal Audiobookshelf address (e.g. http://127.0.0.1:13378) rather than your public domain.`
+            ? `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): ${detail}. If Audiobookshelf runs in Docker, ensure ABS_TARGET_SERVER in ecosystem.config.cjs points to your Host LAN IP (e.g. http://192.168.68.102:13378) instead of localhost/127.0.0.1.`
+            : `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): The proxy or sidecar could not reach Audiobookshelf. If Audiobookshelf is running in Docker, ensure ABS_TARGET_SERVER points to your Host LAN IP (e.g. http://192.168.68.102:13378) rather than localhost or your public domain.`
         );
       }
       const errDetail = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
@@ -265,8 +265,8 @@ export async function authenticateAbs(
         const detail = res.data?.detail || res.data?.message || (typeof res.data === 'string' ? res.data : '');
         throw new Error(
           detail
-            ? `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): ${detail}. Ensure your sidecar's ABS_TARGET_SERVER points to your internal Audiobookshelf address (e.g. http://127.0.0.1:13378).`
-            : `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): The proxy or sidecar could not reach Audiobookshelf. Verify that ABS_TARGET_SERVER in your sidecar environment is set to your internal Audiobookshelf address (e.g. http://127.0.0.1:13378) rather than your public domain.`
+            ? `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): ${detail}. If Audiobookshelf runs in Docker, ensure ABS_TARGET_SERVER in ecosystem.config.cjs points to your Host LAN IP (e.g. http://192.168.68.102:13378) instead of localhost/127.0.0.1.`
+            : `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): The proxy or sidecar could not reach Audiobookshelf. If Audiobookshelf is running in Docker, ensure ABS_TARGET_SERVER points to your Host LAN IP (e.g. http://192.168.68.102:13378) rather than localhost or your public domain.`
         );
       }
       throw new Error(`Token verification failed (HTTP ${res.status}). Verify your Audiobookshelf API key.`);

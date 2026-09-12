@@ -14,6 +14,11 @@ const path = require('path');
 // 3. VOLUME_DIR: Absolute path to the output directory where audio clips & transcripts are saved.
 // 4. AUDIOBOOKS_PATH: Absolute path to the directory on your host disk where audiobooks reside.
 // 5. PATH_MAPPINGS: Container-to-host path mapping if Audiobookshelf is running in Docker.
+// 6. ABS_TARGET_SERVER: Upstream target URL of your Audiobookshelf server.
+//    IMPORTANT DOCKER NOTE: Since Audiobookshelf is almost always installed as a Docker container,
+//    'http://localhost:13378' or 'http://127.0.0.1:13378' will often fail with connection refused or HTTP 502
+//    because host loopback does not route into Docker container published ports.
+//    ALWAYS enter your host server's LAN IP instead (e.g. 'http://192.168.68.102:13378').
 // ==============================================================================
 
 // --- Configure your installation paths here (Absolute Paths) ---
@@ -39,7 +44,7 @@ module.exports = {
         // Server Admin Configurations (automatically provided to connected clients):
         SIDECAR_URL: 'http://localhost:13380', // Internal address for the sidecar service
         USE_BACKEND_PROXY: 'true', // Bypasses browser CORS errors for all clients
-        ABS_TARGET_SERVER: 'http://127.0.0.1:13378' // Default Audiobookshelf server
+        ABS_TARGET_SERVER: 'http://192.168.68.102:13378' // Default Audiobookshelf server (use Host LAN IP for Dockerized ABS)
       }
     },
     // 2. Python Audio Slicing & Transcription Sidecar
@@ -53,7 +58,7 @@ module.exports = {
       env: {
         PORT: 13380, // Sidecar & Interceptor proxy port
         SIDECAR_PORT: 13380,
-        ABS_TARGET_SERVER: 'http://127.0.0.1:13378', // Internal Audiobookshelf server URL (must be internal address)
+        ABS_TARGET_SERVER: 'http://192.168.68.102:13378', // Upstream ABS URL (use Host LAN IP like 192.168.x.x if ABS runs in Docker)
         VOLUME_DIR: '/srv/ssd/Bookshelf/advplyr-bookshelf/bookmarks', // Output directory for bookmarks
         AUDIOBOOKS_PATH: '/srv/ssd/Bookshelf/Audiobooks', // Host path to audiobooks
         PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries' // Docker container:host directory mappings
