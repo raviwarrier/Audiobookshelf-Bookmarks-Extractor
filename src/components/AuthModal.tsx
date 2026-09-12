@@ -211,7 +211,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 required
                 value={serverUrl}
                 onChange={(e) => setServerUrl(e.target.value)}
-                placeholder="http://localhost:13378 or https://abs.yourdomain.com"
+                placeholder="http://localhost:13378 or https://abs.example.com"
                 className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors font-mono"
               />
             </div>
