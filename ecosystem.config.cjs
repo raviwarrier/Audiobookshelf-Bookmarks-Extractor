@@ -35,7 +35,11 @@ module.exports = {
       autorestart: true,
       env: {
         NODE_ENV: 'production',
-        PORT: 13379 // Web UI port
+        PORT: 13379, // Web UI port
+        // Server Admin Configurations (automatically provided to connected clients):
+        SIDECAR_URL: 'http://localhost:13380', // Internal address for the sidecar service
+        USE_BACKEND_PROXY: 'true', // Bypasses browser CORS errors for all clients
+        ABS_TARGET_SERVER: 'http://127.0.0.1:13378' // Default Audiobookshelf server
       }
     },
     // 2. Python Audio Slicing & Transcription Sidecar
@@ -49,7 +53,7 @@ module.exports = {
       env: {
         PORT: 13380, // Sidecar & Interceptor proxy port
         SIDECAR_PORT: 13380,
-        ABS_TARGET_SERVER: 'http://localhost:13378', // Your Audiobookshelf server URL
+        ABS_TARGET_SERVER: 'http://127.0.0.1:13378', // Internal Audiobookshelf server URL (must be internal address)
         VOLUME_DIR: '/srv/ssd/Bookshelf/advplyr-bookshelf/bookmarks', // Output directory for bookmarks
         AUDIOBOOKS_PATH: '/srv/ssd/Bookshelf/Audiobooks', // Host path to audiobooks
         PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries' // Docker container:host directory mappings

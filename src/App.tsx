@@ -104,11 +104,16 @@ export function App() {
       .then((res) => res.json())
       .then((cfg) => {
         if (cfg?.ok) {
-          if (cfg.sidecarPort) {
+          if (cfg.sidecarUrl) {
+            setSidecarUrl(cfg.sidecarUrl);
+          } else if (cfg.sidecarPort) {
             const host = (typeof window !== 'undefined' && window.location?.hostname && !window.location.hostname.includes('run.app'))
               ? window.location.hostname
               : 'localhost';
             setSidecarUrl(`http://${host}:${cfg.sidecarPort}`);
+          }
+          if (cfg.useBackendProxy !== undefined) {
+            setUseProxy(Boolean(cfg.useBackendProxy));
           }
           if (cfg.absTargetServer && cfg.absTargetServer !== 'http://audiobookshelf:80') {
             setServerUrl(cfg.absTargetServer);

@@ -180,6 +180,14 @@ export async function authenticateAbs(
       if (res.status === 401 || res.status === 403) {
         throw new Error('Invalid username or password. Please verify your Audiobookshelf credentials.');
       }
+      if (res.status === 502) {
+        const detail = res.data?.detail || res.data?.message || (typeof res.data === 'string' ? res.data : '');
+        throw new Error(
+          detail
+            ? `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): ${detail}. Ensure your sidecar's ABS_TARGET_SERVER points to your internal Audiobookshelf address (e.g. http://127.0.0.1:13378).`
+            : `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): The proxy or sidecar could not reach Audiobookshelf. Verify that ABS_TARGET_SERVER in your sidecar environment is set to your internal Audiobookshelf address (e.g. http://127.0.0.1:13378) rather than your public domain.`
+        );
+      }
       const errDetail = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
       throw new Error(`Authentication failed (HTTP ${res.status}): ${errDetail}`);
     }
@@ -252,6 +260,14 @@ export async function authenticateAbs(
       }
       if (res.status === 404) {
         throw new Error(`Audiobookshelf server at ${cleanUrl} returned 404 Not Found. Please check that your Server URL is correct.`);
+      }
+      if (res.status === 502) {
+        const detail = res.data?.detail || res.data?.message || (typeof res.data === 'string' ? res.data : '');
+        throw new Error(
+          detail
+            ? `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): ${detail}. Ensure your sidecar's ABS_TARGET_SERVER points to your internal Audiobookshelf address (e.g. http://127.0.0.1:13378).`
+            : `Connection to Audiobookshelf failed (HTTP 502 Bad Gateway): The proxy or sidecar could not reach Audiobookshelf. Verify that ABS_TARGET_SERVER in your sidecar environment is set to your internal Audiobookshelf address (e.g. http://127.0.0.1:13378) rather than your public domain.`
+        );
       }
       throw new Error(`Token verification failed (HTTP ${res.status}). Verify your Audiobookshelf API key.`);
     }

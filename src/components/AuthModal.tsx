@@ -189,95 +189,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {/* Form */}
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           
-          {/* Server & Sidecar URLs */}
-          <div className="space-y-3">
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-medium text-neutral-300">
-                  Audiobookshelf Server URL
-                </label>
-                <div className="flex items-center gap-1.5 text-[10px]">
-                  <button
-                    type="button"
-                    onClick={() => setServerUrl('http://localhost:13378')}
-                    className="text-neutral-400 hover:text-white underline cursor-pointer"
-                  >
-                    Default (http://localhost:13378)
-                  </button>
-                </div>
+          {/* Server URL */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-medium text-neutral-300">
+                Audiobookshelf Server URL
+              </label>
+              <div className="flex items-center gap-1.5 text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setServerUrl('http://localhost:13378')}
+                  className="text-neutral-400 hover:text-white underline cursor-pointer"
+                >
+                  Default (http://localhost:13378)
+                </button>
               </div>
-              <input
-                type="url"
-                required
-                value={serverUrl}
-                onChange={(e) => setServerUrl(e.target.value)}
-                placeholder="http://localhost:13378 or https://abs.example.com"
-                className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors font-mono"
-              />
             </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-medium text-neutral-300">
-                  FastAPI Sidecar Service URL
-                </label>
-                <div className="flex items-center gap-1.5 text-[10px]">
-                  <button
-                    type="button"
-                    onClick={() => setSidecarUrl('http://localhost:13380')}
-                    className="text-neutral-400 hover:text-white underline cursor-pointer"
-                  >
-                    Default (13380)
-                  </button>
-                  {!isCloudHost && clientHost !== 'localhost' && clientHost !== '127.0.0.1' && (
-                    <>
-                      <span className="text-neutral-600">|</span>
-                      <button
-                        type="button"
-                        onClick={() => setSidecarUrl(`http://${clientHost}:13380`)}
-                        className="text-neutral-400 hover:text-white underline cursor-pointer"
-                      >
-                        Host IP (13380)
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-              <input
-                type="url"
-                required
-                value={sidecarUrl}
-                onChange={(e) => setSidecarUrl(e.target.value)}
-                placeholder="http://localhost:13380"
-                className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors font-mono"
-              />
-              <p className="text-[11px] text-neutral-500 mt-1">
-                Default port is <span className="text-neutral-300">13380</span> (FastAPI audio clipper & transcription proxy).
-              </p>
-            </div>
-          </div>
-
-          {/* Proxy Option */}
-          <div className="p-2.5 bg-[#141414] border border-neutral-800 flex items-center justify-between text-xs">
-            <label className="flex items-center gap-2 cursor-pointer text-neutral-300">
-              <input
-                type="checkbox"
-                checked={useProxy}
-                onChange={(e) => setUseProxy(e.target.checked)}
-                className="accent-white w-3.5 h-3.5 cursor-pointer"
-              />
-              <span className="font-semibold text-white">Backend Server Proxy</span>
-              <span className="text-neutral-500 text-[11px]">(Bypasses browser CORS errors)</span>
-            </label>
-            <a
-              href="https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor#cors-configuration-warning"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-neutral-400 hover:text-white flex items-center gap-1 text-[11px] underline"
-            >
-              <span>Proxy Docs</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
+            <input
+              type="url"
+              required
+              value={serverUrl}
+              onChange={(e) => setServerUrl(e.target.value)}
+              placeholder="http://localhost:13378 or https://abs.example.com"
+              className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors font-mono"
+            />
           </div>
 
           {/* Auth Mode Select */}
@@ -386,15 +321,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
 
           {/* Action Buttons */}
-          <div className="pt-3 border-t border-neutral-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={handleMockConnect}
-              disabled={isConnecting}
-              className="text-neutral-400 hover:text-white text-xs underline order-2 sm:order-1 transition-colors text-center sm:text-left py-1"
-            >
-              Explore with Test Demo Session
-            </button>
+          <div className="pt-3 border-t border-neutral-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
+            {/* Demo session link hidden from user interface per admin configuration */}
+            {false && (
+              <button
+                type="button"
+                onClick={handleMockConnect}
+                disabled={isConnecting}
+                className="text-neutral-400 hover:text-white text-xs underline order-2 sm:order-1 transition-colors text-center sm:text-left py-1"
+              >
+                Explore with Test Demo Session
+              </button>
+            )}
 
             <div className="flex items-center justify-end gap-2.5 order-1 sm:order-2 shrink-0">
               <button

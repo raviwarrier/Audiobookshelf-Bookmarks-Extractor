@@ -390,8 +390,8 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
             </div>
 
             <div className="p-3.5 bg-[#151515] border border-neutral-700 space-y-1">
-              <span className="text-neutral-500 block text-[10px] uppercase font-semibold">Sidecar Target</span>
-              <span className="text-neutral-300 block font-mono text-[11px] truncate">{sidecarUrl}</span>
+              <span className="text-neutral-500 block text-[10px] uppercase font-semibold">Playback Position</span>
+              <span className="text-neutral-300 block font-mono text-[11px]">{formatBookmarkedDuration(session.currentTime)}</span>
             </div>
           </div>
 

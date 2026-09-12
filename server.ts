@@ -130,9 +130,13 @@ async function startServer() {
   app.get("/api/config", (req, res) => {
     const sidecarPort = process.env.SIDECAR_PORT || 13380;
     const absServer = process.env.ABS_TARGET_SERVER || process.env.ABS_SERVER_URL || "";
+    const sidecarUrl = process.env.SIDECAR_URL || `http://localhost:${sidecarPort}`;
+    const useBackendProxy = process.env.USE_BACKEND_PROXY ? process.env.USE_BACKEND_PROXY !== "false" : true;
     res.json({
       ok: true,
       sidecarPort: Number(sidecarPort) || 13380,
+      sidecarUrl,
+      useBackendProxy,
       absTargetServer: absServer,
       webPort: PORT,
     });

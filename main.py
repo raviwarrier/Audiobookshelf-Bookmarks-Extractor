@@ -361,38 +361,35 @@ def resolve_abs_server_url(
     query_url: Optional[str] = None
 ) -> str:
     """
-    Dynamically resolve Audiobookshelf server URL with preference for client-supplied URL.
-    Order of precedence:
-    1. Direct payload parameter (server_url / serverUrl)
-    2. Header (X-ABS-Server-Url, X-Server-Url, X-ABS-URL)
-    3. Query parameter (?server_url=... or ?serverUrl=...)
-    4. ABS_SERVER_URL / ABS_TARGET_SERVER environment variable (if not default localhost)
-    5. Cached last-known remote ABS server address
-    6. Default fallback: http://localhost:13378
+    Dynamically resolve Audiobookshelf server URL.
+    The configured ABS_TARGET_SERVER (internal address like http://127.0.0.1:13378)
+    is the authoritative upstream target for the sidecar proxy.
+    This prevents recursive loops when external clients provide their public URL (e.g. https://abs.example.com).
     """
-    global _last_known_abs_server
+    # 1. Authoritative internal configuration:
+    # If ABS_TARGET_SERVER is configured on this host (e.g. 127.0.0.1, localhost, LAN IP, or Docker service),
+    # ALWAYS use it as the upstream target. This ensures the sidecar connects directly to Audiobookshelf
+    # on the internal network and never loops back through the external reverse proxy.
+    configured = (ABS_TARGET_SERVER or ABS_SERVER_URL or "http://127.0.0.1:13378").strip().rstrip("/")
+    if configured and not (configured.startswith("http://") or configured.startswith("https://")):
+        configured = f"http://{configured}"
+
+    is_internal = any(
+        k in configured.lower()
+        for k in ["localhost", "127.0.0.1", "0.0.0.0", "192.168.", "10.", "172.", "audiobookshelf", "host.docker.internal"]
+    )
+    if is_internal:
+        return configured
+
+    # 2. If ABS_TARGET_SERVER was not an internal address, check explicit client parameters
     explicit = req_url or header_url or query_url
     if explicit:
         clean_exp = str(explicit).strip().rstrip("/")
         if clean_exp and not (clean_exp.startswith("http://") or clean_exp.startswith("https://")):
             clean_exp = f"http://{clean_exp}"
-        if "localhost" not in clean_exp and "127.0.0.1" not in clean_exp:
-            _last_known_abs_server = clean_exp
         return clean_exp
 
-    # Check environment variable first if explicitly set to a non-localhost address
-    if ABS_SERVER_URL and ABS_SERVER_URL.strip() and "localhost:13378" not in ABS_SERVER_URL:
-        return ABS_SERVER_URL.strip().rstrip("/")
-
-    # If environment variable is default localhost but we have observed a remote server (e.g. from web UI)
-    if _last_known_abs_server:
-        return _last_known_abs_server
-
-    raw = ABS_SERVER_URL or "http://localhost:13378"
-    raw = str(raw).strip().rstrip("/")
-    if raw and not (raw.startswith("http://") or raw.startswith("https://")):
-        raw = f"http://{raw}"
-    return raw
+    return configured or "http://127.0.0.1:13378"
 
 
 def extract_authors(meta: Any, fallback: str = "Unknown Author") -> str:
