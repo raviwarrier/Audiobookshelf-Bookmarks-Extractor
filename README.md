@@ -1,18 +1,45 @@
 # Audiobookshelf Bookmarks Extractor
 
 **Version 1.0**  
-Backend app for the bookmarks you create on the ABS Mobile app.
+Automated bookmark audio extractor, Whisper speech-to-text transcriber, and web dashboard for [Audiobookshelf](https://www.audiobookshelf.org/).
 
 ---
 
 ## What It Does
 
-Audiobookshelf Bookmarks Extractor extracts audio clips corresponding to your bookmarks or active listening positions in [Audiobookshelf](https://www.audiobookshelf.org/), transcribes them to text using faster-whisper or Vosk, and stores them neatly structured under each user's directory (`{username}/bookmarks/{book_title}/`).
+Audiobookshelf Bookmarks Extractor automatically extracts audio clips corresponding to your bookmarks or listening positions in Audiobookshelf, transcribes them into searchable markdown notes using AI speech recognition (`faster-whisper` or `Vosk`), and neatly organizes the resulting `.mp3`, `.md`, and `.json` files per user (`{VOLUME_DIR}/{username}/bookmarks/{book_title}/`).
 
-### Architecture Notice
-This project is designed primarily as the **backend service** for the bookmark extractor pipeline. A companion **native Android Kotlin app** is currently being developed to serve as the mobile frontend, letting you tap a button to trigger extraction and transcription directly from your bookmark positions. 
+### Key Features at a Glance
 
-In addition to serving as a backend API, this application also includes a built-in web frontend that you can use directly from any browser if needed.
+- 🎧 **Works with Official ABS Apps**: Zero companion apps or modified APKs required. Keep using the official Audiobookshelf mobile apps (iOS & Android) and web client.
+- ⚡ **Transparent Event Interceptor**: Acts as an ultra-fast reverse proxy that intercepts bookmark taps (`POST /api/me/item/:id/bookmark`), replies instantly to your phone (<50ms), and extracts audio in the background.
+- 🎙️ **AI Speech-to-Text Transcription**: Powered by `faster-whisper` with automatic background model pre-warming on startup to prevent cold-start delays, plus lightweight `Vosk` fallback.
+- 📁 **Direct Local Slicing & Docker Path Mapping**: Uses `ffmpeg` to slice lossless audio clips directly from source `.m4b`/`.mp3` files, with `PATH_MAPPINGS` support for translating ABS container paths to host paths.
+- 📝 **PKM-Ready Structured Markdown**: Formats each transcript with YAML frontmatter (title, author, chapter, timestamp, bookmarked duration) and markdown headers, ready to drop into Obsidian, Logseq, or Notion.
+- 🌐 **Web Dashboard & Audio Player**: Browse, search, filter, and play audio snippets with native waveform seeking (HTTP 206 partial content) and view transcripts from any browser.
+- 🔒 **Zero-Disk Credential Security**: In-memory ephemeral encryption (AES-256) ensures API keys and passwords are never persisted to disk, cookies, or browser databases.
+
+### No Companion App Required — Works with Official Audiobookshelf Clients
+
+**You do not need a custom or companion mobile app.** The extractor operates as a **transparent reverse proxy** sitting directly in front of Audiobookshelf:
+- You and your users continue using the **official Audiobookshelf mobile apps (iOS & Android)** and the official web player as you always have.
+- When you tap **Bookmark** in the official app, the sidecar intercepts the API call, forwards it instantly to Audiobookshelf (with zero delay to your playback), and automatically extracts the 60-second audio snippet and generates an AI transcript in the background.
+- It also includes a responsive **Web Dashboard** (`port 13379`) to browse, search, listen to, and copy transcripts of all your captured bookmarks.
+
+---
+
+> ⚠️ **CRITICAL SETUP STEP FOR SERVER ADMINISTRATORS**
+>
+> To enable automated interception of bookmarks from the official mobile and web apps:
+>
+> **You MUST change your reverse proxy (Nginx, Caddy, Traefik, NPM, Cloudflare Tunnel) to point to the Sidecar Interceptor Port (`13380` or `13377`) instead of the Audiobookshelf port (`13378`).**
+>
+> - **Before (Direct to ABS):** Public Domain `https://books.example.com` ──► Reverse Proxy ──► Port `13378` (ABS)
+> - **After (Intercepted):** Public Domain `https://books.example.com` ──► Reverse Proxy ──► Port `13380` (Sidecar) ──► Port `13378` (ABS)
+>
+> The sidecar's `ABS_TARGET_SERVER` setting points internally to your real Audiobookshelf port (`http://localhost:13378`). All regular streaming, browsing, authentication, and sync requests are passed straight through to ABS with zero delay. Only bookmark creation requests are tapped for background extraction.
+>
+> *(See the [Admin Reverse Proxy Configuration Guide](#admin-reverse-proxy-configuration-guide-changing-the-proxy-destination) below for exact configuration examples).*
 
 ---
 
@@ -26,7 +53,7 @@ In addition to serving as a backend API, this application also includes a built-
 
 ## Share with Your Users
 
-If your users want to use this app (and in the future, the companion Android app), they will need to enter their **API key** (recommended) or their **username and password**.
+If your users want to use the Web Dashboard to browse and play their extracted bookmarks and transcripts, they can log in using their **API key** (recommended) or their **username and password**.
 
 Here is a simple step-by-step instruction that you can share with your users on how to obtain their API key:
 
@@ -69,6 +96,67 @@ Here is a simple step-by-step instruction that you can share with your users on 
   - *macOS (Homebrew)*: `brew install ffmpeg`
   - *Arch Linux*: `sudo pacman -S ffmpeg`
   - *Fedora / RHEL*: `sudo dnf install -y ffmpeg`
+
+---
+
+## URL, Port & Architecture Guide: Who Is Who?
+
+If you are confused about the multiple URLs and ports used in this project, here is a complete, clear breakdown of the **three distinct services**, what each is called in different places, and what it is used for:
+
+### Quick Reference Matrix
+
+| Service Name | Default Port | Variable Name(s) | UI Label | Example Address in Your Setup | What It Does |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. Audiobookshelf (ABS) Server** | **`13378`** *(or 80 / 443)* | `ABS_TARGET_SERVER`<br>`ABS_SERVER_URL` | **"Audiobookshelf Server URL"** | `https://books.raviwarrier.net`<br>`http://192.168.68.102:13378`<br>`http://abs.onrwpi.com` | **Your actual media server**. Contains your audiobooks library, user accounts, and playback progress. **This app connects to it as a client/proxy.** |
+| **2. Python Sidecar & Interceptor Proxy** | **`13380`** *(or 13377)* | `SIDECAR_PORT`<br>`PORT: 13380` | **"Sidecar Backend URL"** | `http://192.168.68.102:13380`<br>`https://abs-sidecar.onrwpi.com` | **Audio extractor & transparent reverse proxy**. Slices `.mp3` with FFmpeg, runs Whisper speech-to-text, and intercepts official ABS mobile/web bookmark taps (`POST /api/me/item/:id/bookmark`). |
+| **3. Web Dashboard & UI Proxy** | **`13379`** *(or 13376)* | `PORT: 13379` | *(Browser Address Bar)* | `http://192.168.68.102:13379`<br>`https://abs-bookmarks.onrwpi.com` | **The web frontend**. The browser dashboard where you view listening sessions, browse snippets, listen to audio clips, and read transcripts. |
+
+---
+
+### What Does `ABS_TARGET_SERVER` Mean?
+
+> **Question:** *"When you say `ABS_TARGET_SERVER`, which one are you referring to?"*
+
+**Answer:** `ABS_TARGET_SERVER` is **Service #1: your real Audiobookshelf media server** (e.g. `http://192.168.68.102:13378` or `https://books.raviwarrier.net`).
+
+It is called the "target" because it is the **upstream destination** where the sidecar forwards all proxied requests, queries library data, and verifies user tokens. 
+
+- In `ecosystem.config.cjs`:
+  ```javascript
+  ABS_TARGET_SERVER: 'http://192.168.68.102:13378' // Point to your real Audiobookshelf instance!
+  ```
+- If your ABS server is hosted on the same physical machine as the sidecar, you can use its local IP (`http://192.168.68.102:13378`) or domain (`https://books.raviwarrier.net`).
+
+---
+
+### Detailed Service Breakdown
+
+#### 1. Audiobookshelf Server (The Target / Upstream)
+- **What it is:** Your existing Audiobookshelf Docker container or server.
+- **Default Port:** `13378` (or standard HTTPS `443` / HTTP `80` if reverse-proxied).
+- **Names in this project:** `ABS_TARGET_SERVER`, `ABS_SERVER_URL`, or `"Audiobookshelf Server URL"` in the login dialog.
+- **Your URLs:** `https://books.raviwarrier.net`, `http://192.168.68.102:13378`, or `http://abs.onrwpi.com`.
+- **Purpose:** Stores audiobooks, holds your listening progress, handles user authentication, and stores native bookmarks in its database. **This extractor never replaces this port; it only communicates with it.**
+
+#### 2. Sidecar & Interceptor Proxy (`abs-extractor-sidecar`)
+- **What it is:** The Python FastAPI backend (`main.py`) powered by FFmpeg and Whisper speech-to-text.
+- **Default Port:** `13380` (alternative `13377`).
+- **Names in this project:** `abs-extractor-sidecar`, `SIDECAR_PORT`, `PORT` (for the python process), or `"Sidecar Backend URL"` in the Web UI.
+- **Your URL:** `http://192.168.68.102:13380`.
+- **Purposes:**
+  1. **Audio Slicing:** Extracts 60-second audio clips directly from your `.m4b`/`.mp3` files using FFmpeg.
+  2. **Speech-to-Text Transcription:** Transcribes the audio into markdown notes using faster-whisper or Vosk.
+  3. **Event-Driven Bookmark Interceptor:** Acts as a transparent reverse proxy for Audiobookshelf. By pointing your reverse proxy (or client server URL) to this address (`http://192.168.68.102:13380`), normal streaming, browsing, and logins pass straight through to ABS, but whenever you tap **Bookmark** in the official app, the sidecar immediately forwards it to ABS and triggers extraction in the background!
+  4. **Backend REST API:** Provides endpoints (`/api/snippet`, `/api/user/bookmarks`, `/api/health`) for the Web UI, automated scripts, and external tools.
+
+#### 3. Web Dashboard & UI Server (`abs-extractor-web`)
+- **What it is:** The Node.js/Express server (`server.ts`) hosting the compiled React web interface.
+- **Default Port:** `13379` (alternative `13376`).
+- **Names in this project:** `abs-extractor-web`, `PORT` (for the node process in `ecosystem.config.cjs`).
+- **Your URL:** `http://192.168.68.102:13379` (which you can reverse proxy as `https://abs-bookmarks.onrwpi.com`).
+- **Purposes:**
+  1. **User Interface:** The visual web dashboard accessible from any browser (desktop or mobile) to see your books, chapter bookmarks, listening sessions, and transcriptions.
+  2. **Browser CORS Proxy:** Provides an internal route (`/api/proxy/abs`) so your browser can securely communicate with your Audiobookshelf server without triggering CORS blocks.
 
 ---
 
@@ -277,66 +365,121 @@ pm2 restart ecosystem.config.cjs --update-env
 
 ---
 
-## CORS Configuration Warning
+## Admin Reverse Proxy Configuration Guide: Changing the Proxy Destination
 
-> ⚠️ **Caution for Server Admins**: If you access Audiobookshelf across different domains or ports without using the built-in server proxy, your reverse proxy or tunnel **must** enable Cross-Origin Resource Sharing (CORS) headers. 
+> ⚠️ **IMPORTANT ACTION FOR SERVER & HOMELAB ADMINISTRATORS**
+>
+> To take advantage of automated bookmark extraction from the **official Audiobookshelf iOS/Android apps and web client**, you must update your reverse proxy to route incoming traffic to the **Sidecar Interceptor Port (`13380`)** instead of the native Audiobookshelf port (`13378`).
 
-*(Note: If you keep **Backend Server Proxy** enabled in the web app, requests are relayed server-to-server and will bypass browser CORS automatically.)*
+### The Routing Change
 
-If connecting directly from a browser or external client, configure your reverse proxy:
+```
+BEFORE (Direct to ABS — No automated extraction):
+Internet / LAN ──► [ Reverse Proxy ] ──► Port 13378 (Audiobookshelf)
 
-### Nginx
-Add to your `location` block:
+AFTER (Intercepted — Seamless automated extraction):
+Internet / LAN ──► [ Reverse Proxy ] ──► Port 13380 (Sidecar Interceptor)
+                                               │
+                                               │ (All traffic transparently relayed)
+                                               ▼
+                                         Port 13378 (Audiobookshelf via ABS_TARGET_SERVER)
+```
+
+- **Why this is safe**: The sidecar acts as a transparent, high-performance reverse proxy. Audio streaming, file downloads, authentication, library sync, websockets, and cover images are passed through to your Audiobookshelf server (`ABS_TARGET_SERVER`) with zero lag or alteration.
+- **Why this is needed**: Audiobookshelf does not currently emit webhook events when a user creates a bookmark. By positioning the sidecar in the request path, whenever an official mobile or web client sends a `POST /api/me/item/:id/bookmark`, the sidecar records the bookmark in ABS, returns the success response to the client immediately, and triggers audio extraction and Whisper transcription in a non-blocking background worker.
+
+---
+
+### Reverse Proxy Configuration Examples
+
+Update your reverse proxy's target upstream port from **`13378`** to **`13380`** (or your custom `SIDECAR_PORT`):
+
+#### 1. Nginx
+Update the `proxy_pass` directive in your server configuration block:
+
 ```nginx
-location / {
-    if ($request_method = 'OPTIONS') {
-        add_header 'Access-Control-Allow-Origin' '*' always;
-        add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS, PUT, DELETE' always;
-        add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, Accept' always;
-        add_header 'Content-Length' 0;
-        add_header 'Content-Type' 'text/plain; charset=utf-8';
-        return 204;
+server {
+    server_name books.yourdomain.com;
+
+    # Increase client body size and timeouts for audio uploads/transcriptions
+    client_max_body_size 100M;
+    proxy_read_timeout 300s;
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+
+    location / {
+        # CHANGE: Point to sidecar (13380) instead of ABS (13378)
+        proxy_pass http://127.0.0.1:13380;
+
+        # Standard proxy headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket support (required for ABS player syncing)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
-    add_header 'Access-Control-Allow-Origin' '*' always;
-    add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS, PUT, DELETE' always;
-    add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, Accept' always;
-    proxy_pass http://localhost:13378;
 }
 ```
 
-### Traefik
-In your Docker Compose labels:
-```yaml
-labels:
-  - "traefik.http.middlewares.abs-cors.headers.accesscontrolallowmethods=GET,POST,OPTIONS,PUT,DELETE"
-  - "traefik.http.middlewares.abs-cors.headers.accesscontrolalloworiginlist=*"
-  - "traefik.http.middlewares.abs-cors.headers.accesscontrolallowheaders=Authorization,Content-Type,Accept"
-  - "traefik.http.routers.abs.middlewares=abs-cors"
-```
+#### 2. Nginx Proxy Manager (NPM)
+1. Open your Nginx Proxy Manager admin panel.
+2. Edit your Audiobookshelf **Proxy Host** (e.g. `books.yourdomain.com`).
+3. In the **Details** tab:
+   - Change **Forward Port** from `13378` to **`13380`**.
+   - Ensure **Websockets Support** is toggled **ON**.
+   - Ensure **Block Common Exploits** is toggled **ON**.
+4. In the **Advanced** tab (optional, for extended timeouts):
+   ```nginx
+   proxy_read_timeout 300s;
+   proxy_send_timeout 300s;
+   client_max_body_size 100M;
+   ```
+5. Click **Save**.
 
-### Caddy
-In your `Caddyfile`:
+#### 3. Caddy
+In your `Caddyfile`, update the `reverse_proxy` address:
+
 ```caddyfile
-your-abs-domain.com {
-    @cors_preflight method OPTIONS
-    handle @cors_preflight {
-        header Access-Control-Allow-Origin "*"
-        header Access-Control-Allow-Methods "GET, POST, OPTIONS, PUT, DELETE"
-        header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
-        respond "" 204
+books.yourdomain.com {
+    # CHANGE: Point to sidecar (13380) instead of ABS (13378)
+    reverse_proxy 127.0.0.1:13380 {
+        # Transport settings for long-lived streams
+        transport http {
+            read_timeout 300s
+        }
     }
-    header Access-Control-Allow-Origin "*"
-    reverse_proxy localhost:13378
 }
 ```
 
-### Cloudflare Tunnels (`cloudflared`)
-1. In Cloudflare Zero Trust Dashboard, navigate to **Networks** > **Tunnels** > select your tunnel.
-2. Under **Public Hostname**, edit your Audiobookshelf hostname.
-3. Expand **Additional application settings** > **HTTP Response Headers** and add:
-   - `Access-Control-Allow-Origin`: `*`
-   - `Access-Control-Allow-Methods`: `GET, POST, OPTIONS, PUT, DELETE`
-   - `Access-Control-Allow-Headers`: `Authorization, Content-Type, Accept`
+#### 4. Traefik (Docker Compose Labels)
+In your Audiobookshelf or Sidecar `docker-compose.yml`:
+
+```yaml
+services:
+  abs-sidecar:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.abs.rule=Host(`books.yourdomain.com`)"
+      - "traefik.http.routers.abs.entrypoints=websecure"
+      - "traefik.http.routers.abs.tls.certresolver=letsencrypt"
+      # CHANGE: Route traffic to sidecar port 13380
+      - "traefik.http.services.abs.loadbalancer.server.port=13380"
+```
+
+#### 5. Cloudflare Tunnels (`cloudflared`)
+1. In the **Cloudflare Zero Trust Dashboard**, navigate to **Networks** > **Tunnels**.
+2. Select your active tunnel and click **Configure**.
+3. Under **Public Hostname**, locate your Audiobookshelf hostname (e.g. `books.yourdomain.com`).
+4. Click **Edit**.
+5. In the **Service** section:
+   - Change URL from `http://localhost:13378` to **`http://localhost:13380`**.
+6. Under **Additional application settings** > **HTTP Settings**:
+   - Set **HTTP2** to enabled.
+7. Click **Save Hostname**.
 
 ---
 
@@ -345,30 +488,31 @@ your-abs-domain.com {
 The sidecar supports **automated, event-driven audio clipping and transcription** via a transparent middleware interceptor proxy.
 
 ### How It Works
-Since Audiobookshelf does not emit native WebSocket events when a bookmark is created, the sidecar acts as a transparent reverse proxy for Audiobookshelf:
-1. Point your reverse proxy, DNS, or ABS mobile client to the sidecar (e.g. port `13380` or via your reverse proxy).
-2. When the ABS mobile app creates a bookmark via `POST /api/me/item/{library_item_id}/bookmark`, the sidecar interceptor forwards the request directly to the backend ABS server (`ABS_TARGET_SERVER`).
-3. The original ABS response is immediately returned to the mobile app with zero delay.
-4. Concurrently, a background non-blocking worker (`process_bookmark_extraction`) clips the audio around the bookmark timestamp (`-x`/`+x` seconds) using `ffmpeg` and runs Whisper / Vosk speech-to-text transcription.
-5. All other API requests, streams, and sessions are seamlessly relayed to Audiobookshelf via the catch-all transparent proxy route (`/{path:path}`).
-6. Existing manual triggers (`/api/snippet`, `/api/extract`, web dashboard) continue to function identically.
+
+1. You point your reverse proxy (or local DNS / mobile client) to the sidecar (`port 13380`).
+2. When any official Audiobookshelf mobile app (iOS or Android) or web browser client creates a bookmark via `POST /api/me/item/{library_item_id}/bookmark`, the sidecar interceptor receives the request.
+3. The sidecar forwards the bookmark directly to your upstream Audiobookshelf server (`ABS_TARGET_SERVER`) and returns the response immediately to the client (<50ms).
+4. Simultaneously, a background worker (`process_bookmark_extraction`) extracts the audio snippet (`-30s` to `+30s` around the bookmark) using `ffmpeg` and generates the speech-to-text transcript using faster-whisper or Vosk.
+5. All other API requests, streams, and player sessions are seamlessly relayed to Audiobookshelf via the catch-all transparent proxy route (`/{path:path}`).
+6. The Web Dashboard (`port 13379`) automatically refreshes to display the new audio clip, structured metadata, and transcript.
 
 ### Network Flow Diagram
+
 ```
-[ ABS Mobile App / Client ]
-           │
-           ▼
-[ FastAPI Sidecar (Port 13380) ]
-   ├── POST /api/me/item/:id/bookmark ──────┐
-   │     │ (immediate async return)         │
-   │     ▼                                  ▼
-   │   Forward request to              Spawns non-blocking
-   │   ABS_TARGET_SERVER (Port 13378)   Background Worker:
-   │                                    - ffmpeg audio slice
-   │                                    - Whisper/Vosk transcript
-   │                                    - Saves to /data/{user}/bookmarks/
-   │
-   └── All Other Routes (/{path:path}) ────► Relayed transparently to ABS
+[ Official ABS Client (iOS / Android / Web) ]
+                     │
+                     ▼
+       [ FastAPI Sidecar (Port 13380) ]
+          ├── POST /api/me/item/:id/bookmark ──────┐
+          │     │ (immediate <50ms return)         │
+          │     ▼                                  ▼
+          │   Forward request to              Spawns non-blocking
+          │   ABS_TARGET_SERVER (Port 13378)   Background Worker:
+          │                                    - ffmpeg audio slice
+          │                                    - Whisper/Vosk transcript
+          │                                    - Saves to /data/{user}/bookmarks/
+          │
+          └── All Other Routes (/{path:path}) ────► Relayed transparently to ABS
 ```
 
 ---
@@ -397,7 +541,7 @@ All settings can be specified in a `.env` file, in `docker-compose.yml`, or in `
 
 ## API Usage & Examples
 
-All API endpoints accept Bearer token authentication and can be called directly by external applications (such as the companion Android Kotlin app).
+All API endpoints accept Bearer token authentication and can be called directly by external scripts, Home Assistant, automation webhooks, or the Web Dashboard.
 
 ### 1. Health Check
 ```bash

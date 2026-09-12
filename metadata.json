@@ -1,6 +1,6 @@
 {
   "name": "Audiobookshelf Bookmarks Extractor",
-  "description": "Backend app for the bookmarks you create on ABS Mobile app.",
+  "description": "Automated bookmark audio extractor, Whisper transcriber, and web dashboard for Audiobookshelf.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

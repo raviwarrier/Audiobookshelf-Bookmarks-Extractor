@@ -205,7 +205,7 @@ async def startup_event():
             logger.warning(f"Whisper background pre-warm encountered: {e}")
     asyncio.create_task(asyncio.to_thread(_warmup))
 
-# Enable CORS so native mobile apps (Kotlin Android), WebViews, and external clients can call endpoints directly
+# Enable CORS so native mobile apps (iOS / Android), WebViews, and external clients can call endpoints directly
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -506,7 +506,7 @@ async def extract_token_flexible(
 ) -> str:
     """
     Flexible token extractor callable by:
-    - Native Android Kotlin app (Authorization: Bearer <TOKEN> or X-ABS-Token header)
+    - Mobile apps and API clients (Authorization: Bearer <TOKEN> or X-ABS-Token header)
     - Browser query parameter (?token=<TOKEN> or ?apiKey=<TOKEN>)
     - Request body / cookies
     """
@@ -549,7 +549,7 @@ async def extract_token_flexible(
 class SnippetRequest(BaseModel):
     """
     Flexible request payload for audio extraction and transcription.
-    Accepts snake_case and camelCase parameters for compatibility with Android Kotlin and Web clients.
+    Accepts snake_case and camelCase parameters for compatibility with mobile, scripts, and Web clients.
     """
     duration: Optional[int] = 60
     start_time: Optional[float] = None
@@ -1298,7 +1298,7 @@ async def intercept_general_bookmark_create(request: Request):
     return await proxy_catch_all(path=request.url.path.lstrip("/"), request=request)
 
 
-# --- Manual Trigger & API Endpoints (Android Kotlin App, Web App, Automation) ---
+# --- Manual Trigger & REST API Endpoints (Web App, Scripts, Automation) ---
 
 @app.post("/api/snippet")
 @app.post("/api/extract")
@@ -1311,9 +1311,8 @@ async def create_snippet_or_bookmark(
     """
     Extracts an audio snippet and transcribes it synchronously upon explicit request.
     Can be called by:
-    - Native Android Kotlin App (via manual button press when creating/syncing a bookmark)
     - Web Dashboard
-    - Automation webhooks or curl
+    - Automation webhooks, scripts, or curl
     """
     server_url = resolve_abs_server_url(
         req_url=(payload.server_url or payload.serverUrl or payload.abs_server_url or payload.absServerUrl) if payload else None,
@@ -1350,7 +1349,7 @@ async def get_user_bookmarks(
     raw_token: str = Depends(extract_token_flexible)
 ):
     """
-    JSON API endpoint callable by the Native Android Kotlin app and Web UI.
+    JSON API endpoint callable by the Web UI, mobile players, and external scripts.
     Returns all bookmarks, clips, and transcripts belonging strictly to the authenticated user.
     """
     server_url = resolve_abs_server_url(
@@ -1504,7 +1503,7 @@ async def get_user_bookmarks(
 async def serve_bookmark_file(username: str, book_title: str, filename: str):
     """
     Serves the generated MP3 audio clip or Markdown transcript.
-    Supports HTTP Range requests so mobile players (Android Kotlin ExoPlayer/MediaPlayer) can stream audio smoothly.
+    Supports HTTP Range requests so audio players and web browsers can stream audio smoothly with seeking.
     """
     safe_username = sanitize_filename(username)
     safe_book_title = sanitize_filename(book_title)
