@@ -6,6 +6,7 @@ and manages per-user bookmarks and snippets under {username}/bookmarks.
 """
 
 import os
+import sys
 import re
 import json
 import shutil
@@ -28,8 +29,8 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# Configure logging (stream to sys.stdout so standard INFO logs are routed to pm2 out.log)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", stream=sys.stdout)
 logger = logging.getLogger("abs-sidecar")
 
 # Base directory of the repository (resolves safely regardless of execution directory)
@@ -937,45 +938,57 @@ def process_bookmark_extraction(
             )
 
     if not use_stream:
-        ffmpeg_cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-ss", str(start_time),
-            "-i", file_path,
-            "-t", str(effective_duration),
-            "-c", "copy",
-            output_mp3
-        ]
+        is_mp3_source = file_path.lower().endswith(".mp3")
+        need_encoding = not is_mp3_source
 
-        logger.info(f"Executing ffmpeg (local direct copy): {' '.join(ffmpeg_cmd)}")
-        try:
-            proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        if is_mp3_source:
+            ffmpeg_cmd = [
+                ffmpeg_bin,
+                "-y",
+                "-ss", str(start_time),
+                "-i", file_path,
+                "-t", str(effective_duration),
+                "-c", "copy",
+                output_mp3
+            ]
+            logger.info(f"Executing ffmpeg (mp3 stream copy): {' '.join(ffmpeg_cmd)}")
+            try:
+                proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                if proc.returncode != 0 or not os.path.exists(output_mp3) or os.path.getsize(output_mp3) == 0:
+                    logger.info(f"mp3 stream copy unviable (exit {proc.returncode}). Re-encoding with libmp3lame...")
+                    need_encoding = True
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "ffmpeg is not installed or not found on the host system PATH. "
+                    "Please install ffmpeg on your host system: sudo apt update && sudo apt install -y ffmpeg"
+                )
 
-            # Fallback to mp3 re-encoding if -c copy fails
-            if proc.returncode != 0 or not os.path.exists(output_mp3) or os.path.getsize(output_mp3) == 0:
-                logger.warning(f"ffmpeg -c copy failed (code {proc.returncode}). Retrying with mp3 re-encoding...")
-                fallback_cmd = [
-                    ffmpeg_bin,
-                    "-y",
-                    "-ss", str(start_time),
-                    "-i", file_path,
-                    "-t", str(effective_duration),
-                    "-vn",
-                    "-c:a", "libmp3lame",
-                    "-q:a", "2",
-                    output_mp3
-                ]
-                proc2 = subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        if need_encoding:
+            encode_cmd = [
+                ffmpeg_bin,
+                "-y",
+                "-ss", str(start_time),
+                "-i", file_path,
+                "-t", str(effective_duration),
+                "-vn",
+                "-c:a", "libmp3lame",
+                "-q:a", "2",
+                output_mp3
+            ]
+            ext = os.path.splitext(file_path)[1]
+            logger.info(f"Executing ffmpeg (converting {ext} to mp3): {' '.join(encode_cmd)}")
+            try:
+                proc2 = subprocess.run(encode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
                 if proc2.returncode != 0:
-                    logger.error(f"ffmpeg fallback failed: {proc2.stderr}")
+                    logger.error(f"ffmpeg encoding failed: {proc2.stderr}")
                     raise RuntimeError(
                         f"ffmpeg audio extraction failed: {proc2.stderr[-300:] if proc2.stderr else 'Unknown error'}"
                     )
-        except FileNotFoundError:
-            raise RuntimeError(
-                "ffmpeg is not installed or not found on the host system PATH. "
-                "Please install ffmpeg on your host system: sudo apt update && sudo apt install -y ffmpeg"
-            )
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "ffmpeg is not installed or not found on the host system PATH. "
+                    "Please install ffmpeg on your host system: sudo apt update && sudo apt install -y ffmpeg"
+                )
     else:
         # Slicing directly from Audiobookshelf HTTP API stream
         stream_cmd = [
