@@ -1947,15 +1947,20 @@ async def health_check():
 
 # --- Transparent WebSocket Proxy (Option 3 Support for Socket.IO) ---
 
+@app.websocket("/socket.io")
 @app.websocket("/socket.io/")
 @app.websocket("/socket.io/{path:path}")
 @app.websocket("/ws")
+@app.websocket("/ws/")
 @app.websocket("/ws/{path:path}")
-async def proxy_websocket(websocket: WebSocket, path: str = ""):
+@app.websocket("/{prefix:path}/socket.io")
+@app.websocket("/{prefix:path}/socket.io/")
+@app.websocket("/{prefix:path}/socket.io/{path:path}")
+async def proxy_websocket(websocket: WebSocket, path: str = "", prefix: str = ""):
     """
     Transparent bidirectional WebSocket reverse proxy for Audiobookshelf Socket.IO connections.
-    Allows mobile apps, Web clients, and sync daemons to communicate with full real-time fidelity
-    through sidecar port 13380 with zero protocol disruption.
+    Supports root path (/socket.io/...) as well as reverse proxy subpaths (e.g. /audiobookshelf/socket.io/...).
+    Compatible with websockets library v10, v11, v12, v13, and v14+.
     """
     await websocket.accept()
 
@@ -1968,9 +1973,14 @@ async def proxy_websocket(websocket: WebSocket, path: str = ""):
     ws_target_server = target_server.replace("https://", "wss://").replace("http://", "ws://")
     subpath = path.lstrip("/")
 
-    # Determine base prefix
-    base_prefix = "socket.io" if "socket.io" in str(websocket.url.path) else "ws"
-    ws_target_url = f"{ws_target_server}/{base_prefix}/{subpath}" if subpath else f"{ws_target_server}/{base_prefix}/"
+    # Determine base prefix: maintain exact path requested by client (e.g. /socket.io or /prefix/socket.io)
+    url_path = websocket.url.path.rstrip("/")
+    if "socket.io" in url_path:
+        base_part = url_path[:url_path.find("socket.io") + len("socket.io")].lstrip("/")
+    else:
+        base_part = "ws"
+
+    ws_target_url = f"{ws_target_server}/{base_part}/{subpath}" if subpath else f"{ws_target_server}/{base_part}/"
     if websocket.url.query:
         ws_target_url = f"{ws_target_url}?{websocket.url.query}"
 
@@ -1985,13 +1995,40 @@ async def proxy_websocket(websocket: WebSocket, path: str = ""):
         if h in websocket.headers:
             forward_headers[h] = websocket.headers[h]
 
+    # Handle parameter name differences between websockets versions:
+    # websockets < 13 used 'extra_headers', websockets >= 13 / 14 uses 'additional_headers'
+    connect_kwargs: Dict[str, Any] = {
+        "ping_interval": None,
+        "max_size": None
+    }
     try:
-        async with websockets.connect(
-            ws_target_url,
-            extra_headers=forward_headers,
-            ping_interval=None,
-            max_size=None
-        ) as backend_ws:
+        import inspect
+        sig = inspect.signature(websockets.connect)
+        if "additional_headers" in sig.parameters:
+            connect_kwargs["additional_headers"] = forward_headers
+        elif "extra_headers" in sig.parameters:
+            connect_kwargs["extra_headers"] = forward_headers
+        else:
+            # Fallback for newer client class or wrapped connect
+            connect_kwargs["additional_headers"] = forward_headers
+    except Exception:
+        # Generic fallback
+        connect_kwargs["additional_headers"] = forward_headers
+
+    try:
+        # Attempt connection with determined kwargs, fallback to alternating keyword if TypeError occurs
+        try:
+            connect_cm = websockets.connect(ws_target_url, **connect_kwargs)
+        except TypeError:
+            if "additional_headers" in connect_kwargs:
+                connect_kwargs.pop("additional_headers", None)
+                connect_kwargs["extra_headers"] = forward_headers
+            else:
+                connect_kwargs.pop("extra_headers", None)
+                connect_kwargs["additional_headers"] = forward_headers
+            connect_cm = websockets.connect(ws_target_url, **connect_kwargs)
+
+        async with connect_cm as backend_ws:
             async def client_to_server():
                 try:
                     while True:
