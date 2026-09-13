@@ -12,7 +12,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { AbsActiveSession, AbsUser, Snippet } from '../types';
-import { createAbsBookmark, formatAuthors } from '../lib/absClient';
+import { createAbsBookmark, formatAuthors, getPlayableAudioUrl } from '../lib/absClient';
 
 interface CaptureViewProps {
   user: AbsUser | null;
@@ -92,9 +92,10 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
       setCurrentStep('Connecting to sidecar POST /api/snippet...');
 
       const sidecarEndpoint = `${sidecarUrl.replace(/\/+$/, '')}/api/snippet`;
+      const isCloudPreview = typeof window !== 'undefined' && window.location.hostname.includes('run.app');
       const isSidecarLocal = sidecarUrl.includes('localhost') || sidecarUrl.includes('127.0.0.1');
-      const isHostedApp = typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
-      const shouldProxySidecar = useProxy && !(isSidecarLocal && isHostedApp);
+      // Always proxy through web backend unless running inside remote cloud preview attempting to reach client-side localhost
+      const shouldProxySidecar = useProxy && !(isCloudPreview && isSidecarLocal);
 
       const fetchUrl = shouldProxySidecar ? '/api/proxy/abs' : sidecarEndpoint;
       const snippetPayload = {
@@ -151,7 +152,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
           timestamp: ts,
           startTime: snip.start_time ?? computedStart,
           duration: snip.duration ?? duration,
-          audioUrl: `${sidecarUrl}${snip.audio_url || ''}`,
+          audioUrl: getPlayableAudioUrl(snip.audio_url, sidecarUrl, useProxy),
           transcript: snip.transcript || '',
           markdownContent: snip.transcript || '',
           createdAt: Date.now(),
@@ -177,7 +178,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
           timestamp: ts,
           startTime: snip.start_time,
           duration: snip.duration,
-          audioUrl: `${sidecarUrl}${snip.audio_url}`,
+          audioUrl: getPlayableAudioUrl(snip.audio_url, sidecarUrl, useProxy),
           transcript: snip.transcript,
           markdownContent: snip.transcript,
           createdAt: Date.now(),
@@ -270,6 +271,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
               <span>Connect to Audiobookshelf</span>
             </button>
 
+            {/* Load Test Mock Session hidden per user request (code retained):
             {onUseMockSession && (
               <button
                 type="button"
@@ -279,6 +281,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
                 Load Test Mock Session
               </button>
             )}
+            */}
           </div>
         </section>
       ) : (

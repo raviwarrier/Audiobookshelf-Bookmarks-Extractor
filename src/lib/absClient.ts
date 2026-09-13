@@ -534,11 +534,41 @@ export async function createSnippet(
     timestamp: snip.timestamp,
     startTime: snip.start_time,
     duration: snip.duration,
-    audioUrl: `${cleanUrl}${snip.audio_url}`,
+    audioUrl: getPlayableAudioUrl(snip.audio_url, sidecarUrl, useProxy),
     transcript: snip.transcript,
     markdownContent: snip.transcript,
     createdAt: Date.now(),
   };
+}
+
+/**
+ * Resolves an audio URL so that clients accessing externally or through a domain
+ * stream audio seamlessly via the dashboard server proxy instead of failing on client localhost.
+ */
+export function getPlayableAudioUrl(
+  rawUrl?: string,
+  targetSidecar?: string,
+  proxyEnabled: boolean = true
+): string {
+  if (!rawUrl) return '';
+  if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+    // If an external client received a URL pointing to localhost:13380, strip host to route relatively via web server
+    if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      try {
+        const parsed = new URL(rawUrl);
+        if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+          return `${parsed.pathname}${parsed.search}`;
+        }
+      } catch {}
+    }
+    return rawUrl;
+  }
+  const cleanPath = rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`;
+  // Prefer relative URL handled by dashboard proxy whenever proxy is enabled or sidecar is localhost
+  if (proxyEnabled || !targetSidecar || targetSidecar.includes('localhost') || targetSidecar.includes('127.0.0.1')) {
+    return cleanPath;
+  }
+  return `${targetSidecar.replace(/\/+$/, '')}${cleanPath}`;
 }
 
 /**

@@ -60,11 +60,29 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const handleDownloadAudio = (snippet: Snippet) => {
+  const handleDownloadAudio = async (snippet: Snippet) => {
+    if (!snippet.audioUrl) return;
+    try {
+      // Fetch blob to reliably download the MP3 file without opening new tabs or failing on external hosts
+      const res = await fetch(snippet.audioUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = `${snippet.bookTitle.replace(/\s+/g, '_')}_${snippet.timestamp}.mp3`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
+        return;
+      }
+    } catch (err) {
+      console.warn('Direct blob audio download failed, falling back to direct link:', err);
+    }
     const link = document.createElement('a');
     link.href = snippet.audioUrl;
     link.download = `${snippet.bookTitle.replace(/\s+/g, '_')}_${snippet.timestamp}.mp3`;
-    link.target = '_blank';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

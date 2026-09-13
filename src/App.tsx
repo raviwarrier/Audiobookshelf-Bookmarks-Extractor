@@ -18,75 +18,29 @@ function getDefaultSidecarUrl(): string {
   return 'http://localhost:13380';
 }
 
-// Initial sample snippets to demonstrate library structure
-const INITIAL_SNIPPETS: Snippet[] = [
-  {
-    id: 'dune-sample-01',
-    bookTitle: 'Dune',
-    author: 'Frank Herbert',
-    chapterName: 'Chapter 03 - Gom Jabbar',
-    timestamp: '20260909_141020',
-    startTime: 820,
-    duration: 60,
-    audioUrl: 'https://cdn.freesound.org/previews/612/612089_5674468-lq.mp3',
-    transcript: 'I must not fear. Fear is the mind-killer. Fear is the little-death that brings total obliteration. I will face my fear. I will permit it to pass over me and through me.',
-    markdownContent: `---
-title: "Dune"
-author: "Frank Herbert"
-chapter: "Chapter 03 - Gom Jabbar"
-timestamp: "20260909_141020"
-current_time: 850
-start_time: 820
-duration: 60
----
-
-# Dune
-
-- **Author:** Frank Herbert
-- **Chapter:** Chapter 03 - Gom Jabbar
-- **Offset:** 820s (Duration: 60s)
-
-## Transcript
-
-I must not fear. Fear is the mind-killer. Fear is the little-death that brings total obliteration. I will face my fear. I will permit it to pass over me and through me.
-`,
-    createdAt: Date.now() - 3600000 * 2,
-    username: 'abs_user',
-  },
-  {
-    id: 'atomic-habits-sample-02',
-    bookTitle: 'Atomic Habits',
-    author: 'James Clear',
-    chapterName: 'Chapter 01 - The Surprising Power of Atomic Habits',
-    timestamp: '20260909_120530',
-    startTime: 340,
-    duration: 45,
-    audioUrl: 'https://cdn.freesound.org/previews/612/612089_5674468-lq.mp3',
-    transcript: 'You do not rise to the level of your goals. You fall to the level of your systems. Your goal is your desired outcome, but your system is the collection of daily habits that will get you there.',
-    markdownContent: `---
-title: "Atomic Habits"
-author: "James Clear"
-chapter: "Chapter 01 - The Surprising Power of Atomic Habits"
-timestamp: "20260909_120530"
-current_time: 370
-start_time: 340
-duration: 45
----
-
-# Atomic Habits
-
-- **Author:** James Clear
-- **Chapter:** Chapter 01 - The Surprising Power of Atomic Habits
-- **Offset:** 340s (Duration: 45s)
-
-## Transcript
-
-You do not rise to the level of your goals. You fall to the level of your systems. Your goal is your desired outcome, but your system is the collection of daily habits that will get you there.
-`,
-    createdAt: Date.now() - 3600000 * 18,
-    username: 'abs_user',
-  },
-];
+// Resolves audio URL so that clients accessing externally or through a domain
+// stream audio seamlessly via the dashboard server proxy instead of failing on client localhost
+export function getPlayableAudioUrl(rawUrl?: string, targetSidecar?: string, proxyEnabled: boolean = true): string {
+  if (!rawUrl) return '';
+  if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+    // If an external client received a URL pointing to localhost:13380, strip host to route relatively via web server
+    if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      try {
+        const parsed = new URL(rawUrl);
+        if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+          return `${parsed.pathname}${parsed.search}`;
+        }
+      } catch {}
+    }
+    return rawUrl;
+  }
+  const cleanPath = rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`;
+  // Prefer relative URL handled by dashboard proxy whenever proxy is enabled or sidecar is localhost
+  if (proxyEnabled || !targetSidecar || targetSidecar.includes('localhost') || targetSidecar.includes('127.0.0.1')) {
+    return cleanPath;
+  }
+  return `${targetSidecar.replace(/\/+$/, '')}${cleanPath}`;
+}
 
 export function App() {
   const [activeView, setActiveView] = useState<'capture' | 'library'>('capture');
@@ -131,8 +85,8 @@ export function App() {
   // Auth modal opens automatically on initial app load if no active user session exists
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(true);
 
-  // Snippets library state
-  const [snippets, setSnippets] = useState<Snippet[]>(INITIAL_SNIPPETS);
+  // Snippets library state (initialized empty - no dummy or mock snippets)
+  const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [isLoadingBookmarks, setIsLoadingBookmarks] = useState<boolean>(false);
 
   // Sync user's bookmarks from sidecar's {username}/bookmarks directory
@@ -168,18 +122,13 @@ export function App() {
             timestamp: b.timestamp,
             startTime: b.start_time,
             duration: b.duration,
-            audioUrl: b.audio_url ? (b.audio_url.startsWith('http') ? b.audio_url : `${targetSidecar.replace(/\/+$/, '')}${b.audio_url}`) : '',
+            audioUrl: getPlayableAudioUrl(b.audio_url, targetSidecar, true),
             transcript: b.transcript,
             markdownContent: `# ${b.book_title}\n\n${b.transcript}`,
             createdAt: b.created_at ? new Date(b.created_at).getTime() : Date.now(),
             username: b.username || username
           }));
-          if (sidecarBookmarks.length > 0) {
-            setSnippets(prev => {
-              const otherUsers = prev.filter(s => s.username && s.username !== username);
-              return [...sidecarBookmarks, ...otherUsers];
-            });
-          }
+          setSnippets(sidecarBookmarks);
         }
       } else {
         const res = await fetch(endpoint, {
@@ -199,18 +148,13 @@ export function App() {
               timestamp: b.timestamp,
               startTime: b.start_time,
               duration: b.duration,
-              audioUrl: b.audio_url ? (b.audio_url.startsWith('http') ? b.audio_url : `${targetSidecar.replace(/\/+$/, '')}${b.audio_url}`) : '',
+              audioUrl: getPlayableAudioUrl(b.audio_url, targetSidecar, proxyEnabled),
               transcript: b.transcript,
               markdownContent: `# ${b.book_title}\n\n${b.transcript}`,
               createdAt: b.created_at ? new Date(b.created_at).getTime() : Date.now(),
               username: b.username || username
             }));
-            if (sidecarBookmarks.length > 0) {
-              setSnippets(prev => {
-                const otherUsers = prev.filter(s => s.username && s.username !== username);
-                return [...sidecarBookmarks, ...otherUsers];
-              });
-            }
+            setSnippets(sidecarBookmarks);
           }
         }
       }
@@ -219,7 +163,7 @@ export function App() {
     } finally {
       setIsLoadingBookmarks(false);
     }
-  }, []);
+  }, [serverUrl]);
 
   // Automatically fetch active listening session once user connects
   const loadActiveSession = useCallback(async (
@@ -313,8 +257,40 @@ export function App() {
     setSnippets((prev) => [newSnippet, ...prev]);
   };
 
-  const handleDeleteSnippet = (id: string) => {
+  const handleDeleteSnippet = async (id: string) => {
+    // 1. Immediately remove from UI state for instant response
     setSnippets((prev) => prev.filter((s) => s.id !== id));
+
+    // 2. Permanently delete from sidecar server storage if connected
+    if (activeToken && sidecarUrl) {
+      try {
+        const endpoint = `${sidecarUrl.replace(/\/+$/, '')}/api/user/bookmarks/${encodeURIComponent(id)}`;
+        if (useProxy) {
+          await fetch('/api/proxy/abs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              targetUrl: endpoint,
+              method: 'DELETE',
+              headers: {
+                'Authorization': `Bearer ${activeToken}`,
+                'X-ABS-Server-Url': serverUrl,
+              }
+            })
+          });
+        } else {
+          await fetch(endpoint, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${activeToken}`,
+              'X-ABS-Server-Url': serverUrl,
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('Notice deleting bookmark from disk:', err);
+      }
+    }
   };
 
   return (

@@ -67,7 +67,7 @@ async function startServer() {
         signal: controller.signal,
       };
 
-      if (body && ["POST", "PUT", "PATCH"].includes(method.toUpperCase())) {
+      if (body && ["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) {
         fetchOptions.body = typeof body === "string" ? body : JSON.stringify(body);
         if (!safeHeaders["Content-Type"]) {
           safeHeaders["Content-Type"] = "application/json";
@@ -123,6 +123,43 @@ async function startServer() {
         error: "Proxy connection error",
         message: `${msg}${hint}`,
       });
+    }
+  });
+
+  // Streaming Media Proxy for Bookmarks: Audio (.mp3), Markdown (.md), and JSON metadata
+  // Seamlessly proxies static media requests from client browsers to the FastAPI sidecar service.
+  // Supports HTTP Range headers for audio seeking and streaming playback in the web player.
+  app.get(["/bookmarks/*", "/snippets/*"], async (req, res) => {
+    try {
+      const sidecarBase = (process.env.SIDECAR_URL || `http://127.0.0.1:${process.env.SIDECAR_PORT || 13380}`).replace(/\/+$/, "");
+      const targetUrl = `${sidecarBase}${req.originalUrl}`;
+      const forwardHeaders: Record<string, string> = {};
+      if (req.headers.range) {
+        forwardHeaders["range"] = req.headers.range;
+      }
+      if (req.headers.authorization) {
+        forwardHeaders["authorization"] = req.headers.authorization;
+      }
+
+      const sidecarRes = await fetch(targetUrl, {
+        headers: forwardHeaders,
+      });
+
+      res.status(sidecarRes.status);
+      sidecarRes.headers.forEach((value, key) => {
+        res.setHeader(key, value);
+      });
+      res.setHeader("Access-Control-Allow-Origin", "*");
+
+      if (sidecarRes.body) {
+        const { Readable } = await import("stream");
+        Readable.fromWeb(sidecarRes.body as any).pipe(res);
+      } else {
+        res.end();
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Media proxy connection failure";
+      res.status(502).json({ error: "Failed to stream media from sidecar", message: msg });
     }
   });
 
