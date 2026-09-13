@@ -29,7 +29,7 @@ except ImportError:
 import requests
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from fastapi import FastAPI, Request, Header, HTTPException, Depends, Query, Response
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -1979,9 +1979,9 @@ async def proxy_websocket(websocket: WebSocket, path: str = ""):
         await websocket.close(code=1011, reason="websockets package missing on sidecar")
         return
 
-    # Forward client auth, cookies, and user agent
+    # Forward client auth, cookies, user-agent, origin, and protocols
     forward_headers = {}
-    for h in ["cookie", "authorization", "user-agent", "sec-websocket-protocol"]:
+    for h in ["cookie", "authorization", "user-agent", "origin", "sec-websocket-protocol"]:
         if h in websocket.headers:
             forward_headers[h] = websocket.headers[h]
 
@@ -2073,15 +2073,48 @@ async def proxy_catch_all(request: Request, path: str = ""):
     if token_candidate and not _last_authenticated_session.get("token"):
         _last_authenticated_session["token"] = token_candidate
 
+    # Adjust timeout: Socket.IO long-polling requests wait for server events (usually 20-55s)
+    is_socketio = "socket.io" in clean_path.lower()
+    req_timeout = httpx.Timeout(120.0, connect=15.0) if httpx is not None else 120.0
+
     try:
         if httpx is not None:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
+            # Handle Socket.IO long-polling or large media streams with streaming client
+            if is_socketio:
+                client = httpx.AsyncClient(follow_redirects=True, timeout=req_timeout)
+                upstream_req = client.build_request(
+                    method=request.method,
+                    url=target_url,
+                    content=body_bytes if body_bytes else None,
+                    headers=headers
+                )
+                abs_resp = await client.send(upstream_req, stream=True)
+                excluded_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+                resp_headers = {
+                    k: v for k, v in abs_resp.headers.items()
+                    if k.lower() not in excluded_headers
+                }
+
+                async def stream_socketio():
+                    try:
+                        async for chunk in abs_resp.aiter_bytes():
+                            yield chunk
+                    finally:
+                        await abs_resp.aclose()
+                        await client.aclose()
+
+                return StreamingResponse(
+                    stream_socketio(),
+                    status_code=abs_resp.status_code,
+                    headers=resp_headers
+                )
+
+            async with httpx.AsyncClient(follow_redirects=True, timeout=req_timeout) as client:
                 abs_resp = await client.request(
                     method=request.method,
                     url=target_url,
                     content=body_bytes if body_bytes else None,
-                    headers=headers,
-                    timeout=60.0
+                    headers=headers
                 )
                 excluded_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
                 resp_headers = {
@@ -2124,7 +2157,7 @@ async def proxy_catch_all(request: Request, path: str = ""):
                     url=target_url,
                     data=body_bytes if body_bytes else None,
                     headers=headers,
-                    timeout=60.0,
+                    timeout=120.0,
                     allow_redirects=True
                 )
             abs_resp = await asyncio.to_thread(_sync_req)
