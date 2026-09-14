@@ -13,10 +13,13 @@ Audiobookshelf Bookmarks Extractor automatically extracts audio clips correspond
 
 - 🎧 **Works with Official ABS Apps**: Zero companion apps or modified APKs required. Keep using the official Audiobookshelf mobile apps (iOS & Android) and web client.
 - ⚡ **Transparent Event Interceptor**: Acts as an ultra-fast reverse proxy that intercepts bookmark taps (`POST /api/me/item/:id/bookmark`), replies instantly to your phone (<50ms), and extracts audio in the background.
+- ⚙️ **Configurable Intercept Durations**: Server administrators can independently customize default clip duration and pre-roll for intercepted mobile/web app bookmarks (`INTERCEPT_SNIPPET_DURATION`, `INTERCEPT_PRE_ROLL`) via PM2/env without altering manual web captures.
 - 🎙️ **AI Speech-to-Text Transcription**: Powered by `faster-whisper` with automatic background model pre-warming on startup to prevent cold-start delays, plus lightweight `Vosk` fallback.
 - 📁 **Direct Local Slicing & Docker Path Mapping**: Uses `ffmpeg` to slice lossless audio clips directly from source `.m4b`/`.mp3` files, with `PATH_MAPPINGS` support for translating ABS container paths to host paths.
-- 📝 **PKM-Ready Structured Markdown**: Formats each transcript with YAML frontmatter (title, author, chapter, timestamp, bookmarked duration) and markdown headers, ready to drop into Obsidian, Logseq, or Notion.
-- 🌐 **Web Dashboard & Audio Player**: Browse, search, filter, and play audio snippets with native waveform seeking (HTTP 206 partial content) and view transcripts from any browser.
+- ⏱️ **Adjust Duration / Context**: Re-slice and re-transcribe existing snippets on the fly directly from the Web UI. Expand pre-roll or total duration to capture the full conversation while preserving the original bookmark anchor.
+- 📚 **Book Filtering Tabs**: Instantly isolate bookmarks by book or view all snippets across your entire library with dynamic count badges.
+- 📦 **Per-Book Bulk Export**: Directly download all bookmarks for any book from the snippet card dropdown as a full **ZIP package** (all audio MP3s + individual MD files) or a single **consolidated Markdown document** ready for Obsidian, Logseq, or Notion.
+- 🔄 **Real-Time Live UI Updates**: Frontend automatically detects newly finished background extractions and updates the feed without requiring manual page reloads or re-authenticating.
 - 🔒 **Zero-Disk Credential Security**: In-memory ephemeral encryption (AES-256) ensures API keys and passwords are never persisted to disk, cookies, or browser databases.
 
 ### No Companion App Required — Works with Official Audiobookshelf Clients
@@ -303,6 +306,8 @@ module.exports = {
         PORT: 13380, // Sidecar & Interceptor proxy port
         SIDECAR_PORT: 13380,
         ABS_TARGET_SERVER: 'http://localhost:13378', // Your Audiobookshelf server URL
+        INTERCEPT_SNIPPET_DURATION: 60, // Total clip length for intercepted bookmarks (seconds)
+        INTERCEPT_PRE_ROLL: 30,         // Seconds captured before the bookmark timestamp
         VOLUME_DIR: '/srv/ssd/Bookshelf/advplyr-bookshelf/bookmarks', // Output directory for bookmarks
         AUDIOBOOKS_PATH: '/srv/ssd/Bookshelf/Audiobooks', // Host path where your audiobooks reside
         PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries' // Translates ABS Docker container volume paths to host paths
@@ -523,8 +528,12 @@ All settings can be specified in a `.env` file, in `docker-compose.yml`, or in `
 | `SIDECAR_PORT` | `13380` | Explicit override port for the FastAPI sidecar. |
 | `VOLUME_DIR` | `/data` | Root output directory where generated audio clips (`.mp3`), transcripts (`.md`), and metadata (`.json`) are stored in `{username}/bookmarks/{book_title}/`. |
 | `SNIPPETS_DIR` | `/data` | Backward-compatible alias for `VOLUME_DIR`. |
-| `SNIPPET_DURATION` | `60` | Total length (in seconds) of the extracted audio snippet around the bookmark. |
-| `SNIPPET_PRE_ROLL` | `30.0` | Number of seconds before the bookmark timestamp to begin the extracted audio clip. For a 60s duration with 30s pre-roll, the snippet captures `[bookmark - 30s]` to `[bookmark + 30s]`. |
+| `AUDIOBOOKS_PATH` | `/audiobooks` | Host server directory where audiobook media files are located. |
+| `PATH_MAPPINGS` | *None* | Comma-separated pairs mapping ABS container paths to host paths (e.g. `/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries`). |
+| `SNIPPET_DURATION` | `60` | Total length (in seconds) of the extracted audio snippet around the bookmark when captured manually via the Web UI. |
+| `SNIPPET_PRE_ROLL` | `30.0` | Number of seconds before the bookmark timestamp to begin the extracted audio clip for manual Web UI extractions. |
+| `INTERCEPT_SNIPPET_DURATION` | `60` | Total length (in seconds) of extracted audio clips for bookmarks intercepted automatically from the official mobile apps and web client. Easily customized in `ecosystem.config.cjs` without changing manual Web UI captures. |
+| `INTERCEPT_PRE_ROLL` | `30.0` | Seconds captured before the bookmark timestamp for intercepted mobile and web app bookmarks. |
 | `WHISPER_MODEL` | `base.en` | Model size for faster-whisper (`tiny.en`, `base.en`, `small.en`, `medium.en`). Defaults to `base.en` for fast, accurate English transcription on CPUs. |
 | `WHISPER_DEVICE` | `cpu` | Device for Whisper speech recognition (`cpu` or `cuda`). |
 | `WHISPER_COMPUTE_TYPE` | `int8` | Inference quantization (`int8`, `float16`, `float32`). `int8` offers high performance with low memory footprint on CPU and Raspberry Pi. |
@@ -648,6 +657,38 @@ curl -X GET http://[your ip:port/proxied url]/api/bookmarks \
 ### 5. Stream or Download Audio File
 ```bash
 curl -O http://[your ip:port/proxied url]/bookmarks/username/Project_Hail_Mary/20260910_103000.mp3
+```
+
+### 6. Adjust Snippet Duration & Pre-Roll (Re-clipping)
+Re-slices the source audio with updated pre-roll or duration boundaries and re-runs Whisper transcription in-place:
+```bash
+curl -X POST http://[your ip:port/proxied url]/api/snippets/expand \
+  -H "Authorization: Bearer <ABS_API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "snippet_id": "20260910_103000",
+    "pre_roll": 45,
+    "duration": 90
+  }'
+```
+
+### 7. Export Book Archive (ZIP or Combined Markdown)
+Downloads all captured bookmarks for a specific book as a `.zip` archive (all MP3s + individual MDs + metadata JSONs) or as a single consolidated `.md` note:
+```bash
+# Download complete ZIP package
+curl -O -J -L "http://[your ip:port/proxied url]/api/export-book?book_title=Project%20Hail%20Mary&format=zip" \
+  -H "Authorization: Bearer <ABS_API_TOKEN>"
+
+# Download consolidated Markdown digest
+curl -O -J -L "http://[your ip:port/proxied url]/api/export-book?book_title=Project%20Hail%20Mary&format=markdown" \
+  -H "Authorization: Bearer <ABS_API_TOKEN>"
+```
+
+### 8. Recent Background Extractions (Live Updates)
+Polls newly completed background extractions for real-time UI notifications without requiring full re-scans:
+```bash
+curl -X GET "http://[your ip:port/proxied url]/api/extractions/recent?since=1726298000" \
+  -H "Authorization: Bearer <ABS_API_TOKEN>"
 ```
 
 ---

@@ -38,6 +38,8 @@ def main():
         "WHISPER_MODEL": "base.en",
         "SNIPPET_DURATION": "60",
         "SNIPPET_PRE_ROLL": "30.0",
+        "INTERCEPT_SNIPPET_DURATION": "60",
+        "INTERCEPT_PRE_ROLL": "30.0",
     }
 
     if os.path.exists(env_file):
@@ -134,6 +136,8 @@ SIDECAR_PORT={sidecar_port}
 # Audio & Transcription Settings
 SNIPPET_DURATION={existing["SNIPPET_DURATION"]}
 SNIPPET_PRE_ROLL={existing["SNIPPET_PRE_ROLL"]}
+INTERCEPT_SNIPPET_DURATION={existing.get("INTERCEPT_SNIPPET_DURATION", "60")}
+INTERCEPT_PRE_ROLL={existing.get("INTERCEPT_PRE_ROLL", "30.0")}
 WHISPER_MODEL={whisper_model}
 WHISPER_DEVICE=cpu
 WHISPER_COMPUTE_TYPE=int8
