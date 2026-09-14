@@ -59,17 +59,20 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
   // Exporting state
   const [exportingBook, setExportingBook] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [selectedBookFilter, setSelectedBookFilter] = useState<string | null>(null);
 
-  const filteredSnippets = snippets.filter(
-    (s) =>
+  // Group snippets by unique books
+  const uniqueBooks: string[] = Array.from(new Set(snippets.map((s) => s.bookTitle).filter(Boolean)));
+
+  const filteredSnippets = snippets.filter((s) => {
+    const matchesSearch =
       s.bookTitle.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.author.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.chapterName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      s.transcript.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  // Group snippets by unique books
-  const uniqueBooks: string[] = Array.from(new Set(snippets.map((s) => s.bookTitle)));
+      s.transcript.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesBook = !selectedBookFilter || s.bookTitle === selectedBookFilter;
+    return matchesSearch && matchesBook;
+  });
 
   const handleCopyTranscript = (id: string, text: string) => {
     navigator.clipboard.writeText(text);
@@ -209,7 +212,9 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
     setExportError(null);
 
     try {
-      const endpoint = `/api/export-book?book_title=${encodeURIComponent(bookTitle)}&format=${format}`;
+      const tokenParam = activeToken ? `&token=${encodeURIComponent(activeToken)}` : '';
+      const serverParam = serverUrl ? `&server_url=${encodeURIComponent(serverUrl)}` : '';
+      const endpoint = `/api/export-book?book_title=${encodeURIComponent(bookTitle)}&format=${format}${tokenParam}${serverParam}`;
       const headers: Record<string, string> = {};
       if (activeToken) {
         headers['Authorization'] = `Bearer ${activeToken}`;
@@ -218,8 +223,8 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
 
       const res = await fetch(endpoint, { headers });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Export failed' }));
-        throw new Error(err.error || `Export failed with HTTP ${res.status}`);
+        const err = await res.json().catch(() => ({ error: `Export failed with status ${res.status}` }));
+        throw new Error(err.detail || err.error || err.message || `Export failed with HTTP ${res.status}`);
       }
 
       const blob = await res.blob();
@@ -361,11 +366,45 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
         )}
       </div>
 
+      {/* Book Filter Chips (When multiple books exist) */}
+      {uniqueBooks.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 pt-1 pb-1">
+          <button
+            onClick={() => setSelectedBookFilter(null)}
+            className={`px-2.5 py-1 text-xs font-mono transition-colors border ${
+              selectedBookFilter === null
+                ? 'bg-neutral-200 text-black border-neutral-200 font-semibold'
+                : 'bg-[#141414] text-neutral-300 border-neutral-700 hover:border-neutral-500'
+            }`}
+          >
+            All Books ({snippets.length})
+          </button>
+          {uniqueBooks.map((bTitle) => {
+            const count = snippets.filter((s) => s.bookTitle === bTitle).length;
+            const isSelected = selectedBookFilter === bTitle;
+            return (
+              <button
+                key={bTitle}
+                onClick={() => setSelectedBookFilter(isSelected ? null : bTitle)}
+                className={`px-2.5 py-1 text-xs font-mono transition-colors border truncate max-w-[260px] ${
+                  isSelected
+                    ? 'bg-neutral-200 text-black border-neutral-200 font-semibold'
+                    : 'bg-[#141414] text-neutral-300 border-neutral-700 hover:border-neutral-500'
+                }`}
+                title={bTitle}
+              >
+                {bTitle} ({count})
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Snippet List */}
       {filteredSnippets.length === 0 ? (
         <div className="border border-neutral-700 bg-[#0d0d0d] p-12 text-center space-y-4">
           <div className="text-neutral-400 text-sm font-mono">
-            {searchTerm ? 'No matching snippets found.' : 'No snippets captured yet.'}
+            {searchTerm || selectedBookFilter ? 'No matching snippets found.' : 'No snippets captured yet.'}
           </div>
           <button
             onClick={onNavigateToCapture}
@@ -407,10 +446,12 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
                 </div>
               </div>
 
-              {/* Audio Player */}
+              {/* Audio Player - remounts cleanly on duration or audioUrl change to purge stale audio buffer */}
               <div className="bg-[#141414] p-2.5 border border-neutral-700">
                 <audio
+                  key={`${snippet.id}-${snippet.duration}-${snippet.audioUrl}`}
                   controls
+                  preload="metadata"
                   src={snippet.audioUrl}
                   className="w-full h-8 bg-[#181818]"
                 />

@@ -2,57 +2,28 @@ const fs = require('fs');
 const path = require('path');
 
 // ==============================================================================
-// PM2 Ecosystem Configuration for Audiobookshelf Bookmarks Extractor
+// PM2 Configuration for Audiobookshelf Bookmarks Extractor
 // ==============================================================================
-// INSTRUCTIONS FOR USERS:
-// 1. APP_DIR: Absolute path to where this repository is located on your server disk.
-//    Change this if your installation path is different (e.g. '/home/pi/Audiobookshelf-Bookmarks-Extractor').
-// 2. PYTHON_PATH: Absolute path to the Python executable in your virtual environment (venv).
-//    Virtual Environment (venv) is the DEFAULT execution mode for this application.
-//    By default, it uses '${APP_DIR}/venv/bin/python3'.
-//    (The setup and update scripts automatically create this venv for you).
-// 3. VOLUME_DIR: Absolute path to the output directory where audio clips & transcripts are saved.
-// 4. AUDIOBOOKS_PATH: Absolute path to the directory on your host disk where audiobooks reside.
-// 5. PATH_MAPPINGS: Container-to-host path mapping if Audiobookshelf is running in Docker.
-// 6. ABS_TARGET_SERVER: Upstream target URL of your Audiobookshelf server.
-//    IMPORTANT DOCKER NOTE: Since Audiobookshelf is almost always installed as a Docker container,
-//    'http://localhost:13378' or 'http://127.0.0.1:13378' will often fail with connection refused or HTTP 502
-//    because host loopback does not route into Docker container published ports.
-//    ALWAYS enter your host server's LAN IP instead (e.g. 'http://192.168.68.102:13378').
+// Key Settings:
+// - APP_DIR: Absolute path to this repository on your server.
+// - PYTHON_PATH: Path to Python in your venv (default: ${APP_DIR}/venv/bin/python3).
+// - ABS_TARGET_SERVER: URL of Audiobookshelf (use LAN IP e.g. http://192.168.1.100:13378 if ABS is in Docker).
+// - VOLUME_DIR: Destination directory where audio clips (.mp3) and transcripts (.md) are saved.
+// - AUDIOBOOKS_PATH: Host folder where your audiobook files are stored.
+// - PATH_MAPPINGS: Docker container-to-host path mapping (e.g. '/audiobooks:/host/path/Audiobooks').
+// - INTERCEPT_SNIPPET_DURATION: Default audio duration (seconds) for mobile/app bookmarks.
+// - INTERCEPT_PRE_ROLL: Seconds captured before the bookmark timestamp.
 // ==============================================================================
 
-// --- Configure your installation paths here (Absolute Paths) ---
-const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor'; // Absolute path to the app directory
+const APP_DIR = '/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor';
 const DEFAULT_VENV_PYTHON = path.join(APP_DIR, 'venv', 'bin', 'python3');
-
-// Virtual Environment (venv) is the default mode:
-// Points directly to the absolute path of the venv python3 executable
 const PYTHON_PATH = fs.existsSync(DEFAULT_VENV_PYTHON) ? DEFAULT_VENV_PYTHON : `${APP_DIR}/venv/bin/python3`;
 
-// ==============================================================================
-// SIDECAR NETWORK ACCESS CONFIGURATION
-// Choose EXACTLY ONE of the following configurations for SIDECAR_URL:
-// (Remember to keep the other methods commented out!)
-//
-// --- OPTION A: PUBLIC DOMAIN / REVERSE PROXY (Cloudflare, Nginx Proxy Manager, Caddy) ---
-// Use this if you access your sidecar or dashboard via a reverse proxy domain.
-// IMPORTANT PORT RULE FOR REVERSE PROXIES:
-// - If your reverse proxy (e.g. NPM) forwards 'abs-bookmarks.raviwarrier.net' directly
-//   to internal IP 192.168.68.102:13380, do NOT add ':13380' to the domain!
-//   Use standard 'https://abs-bookmarks.raviwarrier.net' because the reverse proxy
-//   already routes incoming traffic on standard port 443/80 into port 13380.
-// - If you explicitly expose port 13380 publicly, then include ':13380'.
-// const SIDECAR_URL_CONFIG = 'https://abs-bookmarks.raviwarrier.net'; // <-- [OPTION A: Reverse Proxy Domain]
-//
-// --- OPTION B: HOST LAN IP & PORT (Direct Home/Local Network Access) ---
-// Use this if you connect to your server directly over your home Wi-Fi/LAN without reverse proxy.
-// const SIDECAR_URL_CONFIG = 'http://192.168.68.102:13380'; // <-- [OPTION B: Direct LAN IP & Port]
-//
-// --- OPTION C: LOCAL LOOPBACK (Default & Recommended with Dashboard Backend Proxy) ---
-// When USE_BACKEND_PROXY is 'true', the Web Dashboard server (port 13379) communicates
-// with the sidecar locally on localhost:13380 and proxies requests seamlessly.
-const SIDECAR_URL_CONFIG = 'http://localhost:13380'; // <-- [OPTION C: Localhost with Proxy]
-// ==============================================================================
+// SIDECAR_URL: How the Web UI connects to the Python sidecar.
+// - Reverse proxy domain: 'https://abs-bookmarks.example.com' (no port if reverse proxy routes 443 -> 13380)
+// - Direct LAN IP: 'http://192.168.1.100:13380'
+// - Localhost (recommended with USE_BACKEND_PROXY: 'true'): 'http://localhost:13380'
+const SIDECAR_URL_CONFIG = 'http://localhost:13380';
 
 module.exports = {
   apps: [
@@ -65,13 +36,12 @@ module.exports = {
       autorestart: true,
       env: {
         NODE_ENV: 'production',
-        HOST: '0.0.0.0', // Bind to all interfaces so web UI is reachable across LAN and reverse proxy
-        PORT: 13379, // Web UI port
-        // Server Admin Configurations (automatically provided to connected clients):
-        SIDECAR_URL: SIDECAR_URL_CONFIG, // Sidecar service URL (configured in OPTION A, B, or C above)
-        USE_BACKEND_PROXY: 'true', // Bypasses browser CORS errors and proxies audio/API calls for all clients
-        DEFAULT_ABS_URL: 'https://books.raviwarrier.net', // Default public URL presented to users in Auth Modal
-        ABS_TARGET_SERVER: 'http://192.168.68.102:13378' // Internal upstream Audiobookshelf server (use Host LAN IP for Dockerized ABS)
+        HOST: '0.0.0.0',
+        PORT: 13379,
+        SIDECAR_URL: SIDECAR_URL_CONFIG,
+        USE_BACKEND_PROXY: 'true',
+        DEFAULT_ABS_URL: 'https://abs.example.com',
+        ABS_TARGET_SERVER: 'http://192.168.68.102:13378'
       }
     },
     // 2. Python Audio Slicing & Transcription Sidecar
@@ -83,17 +53,15 @@ module.exports = {
       exec_mode: 'fork',
       autorestart: true,
       env: {
-        HOST: '0.0.0.0', // Bind to all interfaces (localhost, LAN IP, docker bridge)
-        PORT: 13380, // Sidecar & Interceptor proxy port
+        HOST: '0.0.0.0',
+        PORT: 13380,
         SIDECAR_PORT: 13380,
-        ABS_TARGET_SERVER: 'http://192.168.68.102:13378', // Upstream ABS URL (use Host LAN IP like 192.168.x.x if ABS runs in Docker)
-        // Intercepted Bookmarks Default Timing Configuration:
-        // Configures default snippet duration and pre-roll ONLY for bookmarks intercepted from mobile/web apps.
-        INTERCEPT_SNIPPET_DURATION: 60, // Total duration in seconds for intercepted bookmarks (e.g. 60, 90, 120)
-        INTERCEPT_PRE_ROLL: 30, // Seconds captured before the bookmark point (e.g. 30)
-        VOLUME_DIR: '/srv/ssd/Appdata/local/advplyr-bookshelf/bookmarks', // Output directory for bookmarks (auto-scans /srv/ssd/Bookshelf/... as fallback)
-        AUDIOBOOKS_PATH: '/srv/ssd/Bookshelf/Audiobooks', // Host path to audiobooks
-        PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries' // Docker container:host directory mappings
+        ABS_TARGET_SERVER: 'http://192.168.68.102:13378',
+        INTERCEPT_SNIPPET_DURATION: 60, // Total clip length for intercepted bookmarks (seconds)
+        INTERCEPT_PRE_ROLL: 30,         // Seconds to capture before the bookmark
+        VOLUME_DIR: '/srv/ssd/Appdata/local/advplyr-bookshelf/bookmarks',
+        AUDIOBOOKS_PATH: '/srv/ssd/Bookshelf/Audiobooks',
+        PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries'
       }
     }
   ]

@@ -4,9 +4,9 @@
   "version": "1.5.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor.git"
+    "url": "https://github.com/example/Audiobookshelf-Bookmarks-Extractor.git"
   },
-  "homepage": "https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor#readme",
+  "homepage": "https://github.com/example/Audiobookshelf-Bookmarks-Extractor#readme",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

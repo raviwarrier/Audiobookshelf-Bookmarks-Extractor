@@ -149,6 +149,10 @@ async function startServer() {
       sidecarRes.headers.forEach((value, key) => {
         res.setHeader(key, value);
       });
+      // Prevent aggressive browser caching of re-clipped audio
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
       res.setHeader("Access-Control-Allow-Origin", "*");
 
       if (sidecarRes.body) {
@@ -164,10 +168,12 @@ async function startServer() {
   });
 
   // Export Proxy: streams ZIP and Markdown book exports from sidecar service
-  app.get(["/api/export-book", "/api/user/bookmarks/export-book", "/api/snippets/export-book"], async (req, res) => {
+  app.get(["/api/export-book", "/api/user/bookmarks/export-book", "/api/snippets/export-book", "/api/book/export"], async (req, res) => {
     try {
       const sidecarBase = (process.env.SIDECAR_URL || `http://127.0.0.1:${process.env.SIDECAR_PORT || 13380}`).replace(/\/+$/, "");
-      const targetUrl = `${sidecarBase}${req.originalUrl}`;
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      // Forward to authoritative sidecar export route
+      const targetUrl = `${sidecarBase}/api/user/bookmarks/export-book${parsedUrl.search}`;
       const forwardHeaders: Record<string, string> = {};
       if (req.headers.authorization) forwardHeaders["authorization"] = req.headers.authorization;
       if (req.headers["x-abs-server-url"]) forwardHeaders["x-abs-server-url"] = req.headers["x-abs-server-url"] as string;
@@ -183,7 +189,7 @@ async function startServer() {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Book export proxy failed";
-      res.status(502).json({ error: msg });
+      res.status(502).json({ error: "Failed to stream book export from sidecar", message: msg });
     }
   });
 

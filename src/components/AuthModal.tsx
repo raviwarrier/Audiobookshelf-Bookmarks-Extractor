@@ -241,7 +241,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     required
                     value={serverUrl}
                     onChange={(e) => setServerUrl(e.target.value)}
-                    placeholder="https://books.raviwarrier.net or http://localhost:13378"
+                    placeholder="https://abs.example.com or http://localhost:13378"
                     className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors font-mono pr-20"
                   />
                   {!isIpPortUrl(serverUrl) && isEditingPublicUrl && (
@@ -375,7 +375,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <div className="text-neutral-400 text-[11px] pt-1">
                     Tip: Keep &quot;Backend Server Proxy&quot; enabled, or check the{' '}
                     <a
-                      href="https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor#cors-configuration-warning"
+                      href="https://github.com/example/Audiobookshelf-Bookmarks-Extractor#cors-configuration-warning"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-white underline hover:text-neutral-300 inline-flex items-center gap-1"

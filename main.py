@@ -997,7 +997,7 @@ def process_bookmark_extraction(
         fallback_username = (
             (bookmark_data.get("username") if bookmark_data else None)
             or (bookmark_data.get("user") if bookmark_data else None)
-            or "ravi"
+            or os.environ.get("DEFAULT_USERNAME", "user")
         )
         fallback_id = (bookmark_data.get("userId") if bookmark_data else None) or "default_user"
         user = {
@@ -1064,9 +1064,11 @@ def process_bookmark_extraction(
     # 5. Compute time window
     # For bookmark events, window is centered around the bookmark timestamp (e.g. -30s to +30s)
     if custom_start is not None:
-        start_time = float(custom_start)
+        c_val = float(custom_start)
+        start_time = max(0.0, c_val - start_offset) if c_val >= start_offset else max(0.0, c_val)
     elif snippet_request and (snippet_request.start_time is not None or snippet_request.startTime is not None) and not bookmark_data:
-        start_time = float(snippet_request.start_time or snippet_request.startTime)
+        req_start = float(snippet_request.start_time or snippet_request.startTime)
+        start_time = max(0.0, req_start - start_offset) if req_start >= start_offset else max(0.0, req_start)
     else:
         file_relative_offset = max(0.0, current_time - start_offset)
         pre_roll_val = custom_pre_roll if custom_pre_roll is not None else (INTERCEPT_PRE_ROLL if is_intercepted else SNIPPET_PRE_ROLL)
@@ -1100,6 +1102,17 @@ def process_bookmark_extraction(
     output_mp3 = os.path.join(output_dir, f"{timestamp}.mp3")
     output_md = os.path.join(output_dir, f"{timestamp}.md")
     output_json = os.path.join(output_dir, f"{timestamp}.json")
+
+    # When re-clipping or updating an existing snippet, delete the old files first
+    # to guarantee clean replacement and ensure ffmpeg creates a fresh stream
+    if replace_timestamp:
+        for stale_file in [output_mp3, output_md, output_json]:
+            if os.path.exists(stale_file):
+                try:
+                    os.remove(stale_file)
+                    logger.info(f"Unlinked stale file to prepare for clean re-clipping: {stale_file}")
+                except Exception as del_err:
+                    logger.warning(f"Could not remove stale file {stale_file}: {del_err}")
 
     # 7. ffmpeg Subprocess Call
     ffmpeg_bin = get_ffmpeg_bin()
@@ -1284,7 +1297,7 @@ transcription_engine: "{engine_used}"
         "username": username,
         "transcript": full_transcript,
         "raw_transcript": transcript_body,
-        "audio_url": f"/bookmarks/{target_user_name}/{safe_book_title}/{timestamp}.mp3",
+        "audio_url": f"/bookmarks/{target_user_name}/{safe_book_title}/{timestamp}.mp3?v={int(os.path.getmtime(output_mp3)) if os.path.exists(output_mp3) else int(time.time())}",
         "md_url": f"/bookmarks/{target_user_name}/{safe_book_title}/{timestamp}.md",
         "file_path": output_md,
         "mp3_path": output_mp3,
@@ -1337,7 +1350,7 @@ transcription_engine: "{engine_used}"
             "md_file": output_md,
             "transcript": full_transcript,
             "raw_transcript": transcript_body,
-            "audio_url": f"/bookmarks/{safe_username}/{safe_book_title}/{timestamp}.mp3",
+            "audio_url": f"/bookmarks/{safe_username}/{safe_book_title}/{timestamp}.mp3?v={int(os.path.getmtime(output_mp3)) if os.path.exists(output_mp3) else int(time.time())}",
             "md_url": f"/bookmarks/{safe_username}/{safe_book_title}/{timestamp}.md"
         }
     }
@@ -1567,7 +1580,7 @@ async def get_user_bookmarks(
     """
     JSON API endpoint callable by the Web UI, mobile players, and external scripts.
     Returns all bookmarks, clips, and transcripts belonging strictly to the authenticated user.
-    Scans across all candidate volume directories and case variations (e.g. 'ravi' and 'Ravi').
+    Scans across all candidate volume directories and case variations (e.g. 'john' and 'John').
     """
     server_url = resolve_abs_server_url(
         header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url") or request.headers.get("X-ABS-URL"),
@@ -1661,6 +1674,7 @@ async def get_user_bookmarks(
 
                             seen_ids.add(item_unique_key)
                             cur_time_val = float(metadata.get("current_time", float(metadata.get("start_time", 0.0)) + (float(metadata.get("duration", 60)) / 2.0)))
+                            mp3_mtime = int(os.path.getmtime(mp3_path)) if (has_mp3 and os.path.exists(mp3_path)) else int(time.time())
                             bookmarks.append({
                                 "id": f"{book_dir}-{base_name}",
                                 "book_title": metadata.get("book_title") or book_dir,
@@ -1672,7 +1686,7 @@ async def get_user_bookmarks(
                                 "duration": int(metadata.get("duration", 60)),
                                 "library_item_id": metadata.get("library_item_id") or "",
                                 "transcript": transcript_text,
-                                "audio_url": f"/bookmarks/{u}/{book_dir}/{base_name}.mp3" if has_mp3 else None,
+                                "audio_url": f"/bookmarks/{u}/{book_dir}/{base_name}.mp3?v={mp3_mtime}" if has_mp3 else None,
                                 "md_url": f"/bookmarks/{u}/{book_dir}/{fname}",
                                 "file_path": md_path,
                                 "mp3_path": mp3_path if has_mp3 else None,
@@ -1787,13 +1801,16 @@ async def expand_or_update_snippet(
     return result
 
 
+@app.get("/api/export-book")
 @app.get("/api/user/bookmarks/export-book")
 @app.get("/api/snippets/export-book")
+@app.get("/api/book/export")
 async def export_book_snippets(
     book_title: str = Query(..., description="Title of the book to export"),
     format: str = Query("zip", description="Export format: 'zip' or 'markdown'"),
+    token: Optional[str] = Query(None, description="Audiobookshelf Bearer token via query parameter"),
     request: Request = None,
-    raw_token: str = Depends(extract_token_flexible)
+    raw_token: Optional[str] = Depends(extract_token_flexible)
 ):
     """
     Exports all snippets and bookmarks from the specified book at once.
@@ -1803,37 +1820,87 @@ async def export_book_snippets(
     import zipfile
 
     server_url = resolve_abs_server_url(
-        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url") or request.headers.get("X-ABS-URL"),
-        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url") or request.headers.get("X-ABS-URL") if request else None,
+        query_url=(request.query_params.get("server_url") or request.query_params.get("serverUrl")) if request else None
     )
-    user = validate_abs_token(raw_token, server_url=server_url)
+    eff_token = raw_token or token or _last_authenticated_session.get("token")
+    user = None
+    if eff_token:
+        try:
+            user = validate_abs_token(eff_token, server_url=server_url)
+        except Exception as auth_err:
+            logger.warning(f"Export auth token validation failed: {auth_err}. Falling back to active session.")
+
+    if not user:
+        user = _last_authenticated_session.get("user") or {
+            "id": "default_user",
+            "username": os.environ.get("DEFAULT_USERNAME", "user"),
+            "raw_token": eff_token or ""
+        }
+
     username = user["username"]
     safe_username = sanitize_filename(username)
     safe_book_title = sanitize_filename(book_title)
 
-    # Locate book directory
+    # Resilient book directory resolution across candidate storage roots
     book_dir_path = None
     candidate_roots = get_candidate_volume_dirs()
-    user_search_names = list(dict.fromkeys([safe_username, safe_username.lower(), user["id"]]))
+    user_search_names = list(dict.fromkeys([safe_username, safe_username.lower(), user.get("id", ""), "default_user"]))
+    clean_target = re.sub(r'[^a-zA-Z0-9]+', '', book_title).lower()
 
     for root in candidate_roots:
+        possible_user_dirs = []
         for u in user_search_names:
-            for possible_user_dir in [os.path.join(root, u, "bookmarks"), os.path.join(root, u)]:
-                candidate_book_dir = os.path.join(possible_user_dir, safe_book_title)
-                if os.path.isdir(candidate_book_dir):
-                    book_dir_path = candidate_book_dir
+            possible_user_dirs.extend([
+                os.path.join(root, u, "bookmarks"),
+                os.path.join(root, u)
+            ])
+        possible_user_dirs.append(root)
+
+        for p_dir in possible_user_dirs:
+            if not os.path.isdir(p_dir):
+                continue
+
+            # 1. Direct path matches
+            cand1 = os.path.join(p_dir, safe_book_title)
+            if os.path.isdir(cand1):
+                book_dir_path = cand1
+                break
+            cand2 = os.path.join(p_dir, book_title)
+            if os.path.isdir(cand2):
+                book_dir_path = cand2
+                break
+
+            # 2. Case-insensitive and cleaned token matching
+            for b_entry in os.listdir(p_dir):
+                full_entry_path = os.path.join(p_dir, b_entry)
+                if not os.path.isdir(full_entry_path):
+                    continue
+                if b_entry.lower() == safe_book_title.lower() or b_entry.lower() == book_title.lower():
+                    book_dir_path = full_entry_path
                     break
-                if os.path.isdir(possible_user_dir):
-                    for b_entry in os.listdir(possible_user_dir):
-                        if b_entry.lower() == safe_book_title.lower() and os.path.isdir(os.path.join(possible_user_dir, b_entry)):
-                            book_dir_path = os.path.join(possible_user_dir, b_entry)
-                            break
-                if book_dir_path:
+                clean_entry = re.sub(r'[^a-zA-Z0-9]+', '', b_entry).lower()
+                if clean_entry and (clean_entry == clean_target or clean_target.startswith(clean_entry) or clean_entry.startswith(clean_target[:20])):
+                    book_dir_path = full_entry_path
                     break
+
             if book_dir_path:
                 break
         if book_dir_path:
             break
+
+    # 3. Deep walk fallback if folder structure differs
+    if not book_dir_path:
+        for root in candidate_roots:
+            for dirpath, dirnames, filenames in os.walk(root):
+                folder_name = os.path.basename(dirpath)
+                clean_folder = re.sub(r'[^a-zA-Z0-9]+', '', folder_name).lower()
+                if clean_target and clean_folder and (clean_folder in clean_target or clean_target in clean_folder):
+                    if any(f.endswith(".md") or f.endswith(".mp3") for f in filenames):
+                        book_dir_path = dirpath
+                        break
+            if book_dir_path:
+                break
 
     if not book_dir_path or not os.path.isdir(book_dir_path):
         raise HTTPException(status_code=404, detail=f"No snippets found for book '{book_title}'")

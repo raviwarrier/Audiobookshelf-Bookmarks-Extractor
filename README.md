@@ -210,7 +210,7 @@ All configuration values, server URLs, credentials, and storage directories you 
 Clone the repository and run the setup wizard to configure your directories and ports:
 
 ```bash
-git clone https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor.git
+git clone https://github.com/example/Audiobookshelf-Bookmarks-Extractor.git
 cd Audiobookshelf-Bookmarks-Extractor
 
 # Run interactive configuration
@@ -229,7 +229,7 @@ The service will be accessible at `http://[your ip:port/proxied url]`.
 sudo apt-get update && sudo apt-get install -y ffmpeg python3-venv
 
 # 2. Clone repository
-git clone https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor.git
+git clone https://github.com/example/Audiobookshelf-Bookmarks-Extractor.git
 cd Audiobookshelf-Bookmarks-Extractor
 
 # 3. Create and activate a Python virtual environment (recommended to isolate dependencies)
@@ -253,7 +253,7 @@ The project includes an `ecosystem.config.cjs` template designed for production 
 #### Automated Quick Setup (Recommended):
 ```bash
 # 1. Clone repository (example path: /srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor)
-git clone https://github.com/raviwarrier/Audiobookshelf-Bookmarks-Extractor.git
+git clone https://github.com/example/Audiobookshelf-Bookmarks-Extractor.git
 cd Audiobookshelf-Bookmarks-Extractor
 
 # 2. Run the automated installer & updater
