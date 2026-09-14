@@ -8,15 +8,20 @@ import {
   ExternalLink,
   Lock,
   Radio,
-  LogOut
+  LogOut,
+  Globe,
+  Pencil,
+  Check
 } from 'lucide-react';
 import { AbsUser } from '../types';
+import { isIpPortUrl, getStoredCredentials } from '../lib/authStorage';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   user: AbsUser | null;
   currentServerUrl: string;
+  defaultServerUrl?: string;
   currentSidecarUrl: string;
   currentUseProxy: boolean;
   onConnect: (params: {
@@ -28,6 +33,7 @@ interface AuthModalProps {
     username?: string;
     password?: string;
     isMock?: boolean;
+    remember?: boolean;
   }) => Promise<void>;
   onDisconnect: () => void;
 }
@@ -37,6 +43,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   user,
   currentServerUrl,
+  defaultServerUrl,
   currentSidecarUrl,
   currentUseProxy,
   onConnect,
@@ -49,7 +56,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     ? `http://${clientHost}:13380`
     : 'http://localhost:13380';
 
-  const [serverUrl, setServerUrl] = useState(currentServerUrl || 'http://localhost:13378');
+  const [serverUrl, setServerUrl] = useState(currentServerUrl || defaultServerUrl || 'http://localhost:13378');
+  const [isEditingPublicUrl, setIsEditingPublicUrl] = useState(false);
+  const [rememberCredentials, setRememberCredentials] = useState(true);
   const [sidecarUrl, setSidecarUrl] = useState(
     currentSidecarUrl && !currentSidecarUrl.includes('[your ip:port') ? currentSidecarUrl : defaultLocalSidecar
   );
@@ -64,7 +73,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    setServerUrl(currentServerUrl || 'http://localhost:13378');
+    const saved = getStoredCredentials();
+    if (saved) {
+      if (saved.serverUrl) setServerUrl(saved.serverUrl);
+      if (saved.authMode) setAuthMode(saved.authMode);
+      if (saved.token) setToken(saved.token);
+      if (saved.username) setUsername(saved.username);
+      setRememberCredentials(saved.remember ?? true);
+    } else {
+      const initial = currentServerUrl || defaultServerUrl || 'http://localhost:13378';
+      setServerUrl(initial);
+    }
+
     if (!currentSidecarUrl || currentSidecarUrl.includes('[your ip:port')) {
       setSidecarUrl(defaultLocalSidecar);
     } else {
@@ -72,7 +92,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
     setUseProxy(currentUseProxy);
     setErrorMsg(null);
-  }, [isOpen, currentServerUrl, currentSidecarUrl, currentUseProxy, defaultLocalSidecar]);
+  }, [isOpen, currentServerUrl, defaultServerUrl, currentSidecarUrl, currentUseProxy, defaultLocalSidecar]);
 
   if (!isOpen) return null;
 
@@ -101,8 +121,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         username: username.trim(),
         password,
         isMock: false,
+        remember: rememberCredentials,
       });
-      // Clear sensitive unencrypted temporary inputs from state
+      // Clear sensitive unencrypted temporary password input from state
       setPassword('');
       onClose();
     } catch (err: unknown) {
@@ -195,24 +216,72 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <label className="block text-xs font-medium text-neutral-300">
                 Audiobookshelf Server URL
               </label>
-              <div className="flex items-center gap-1.5 text-[10px]">
-                <button
-                  type="button"
-                  onClick={() => setServerUrl('http://localhost:13378')}
-                  className="text-neutral-400 hover:text-white underline cursor-pointer"
-                >
-                  Default (http://localhost:13378)
-                </button>
+              <div className="flex items-center gap-2 text-[10px]">
+                {defaultServerUrl && defaultServerUrl !== serverUrl && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setServerUrl(defaultServerUrl);
+                      setIsEditingPublicUrl(false);
+                    }}
+                    className="text-neutral-400 hover:text-white underline cursor-pointer"
+                  >
+                    Reset to Default ({defaultServerUrl.replace(/^https?:\/\//, '')})
+                  </button>
+                )}
               </div>
             </div>
-            <input
-              type="url"
-              required
-              value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
-              placeholder="http://localhost:13378 or https://abs.example.com"
-              className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors font-mono"
-            />
+
+            {/* If URL looks like an IP:port or user clicked Edit, show editable textbox; otherwise show verified label with Edit button */}
+            {isIpPortUrl(serverUrl) || isEditingPublicUrl ? (
+              <div className="space-y-1.5">
+                <div className="relative flex items-center">
+                  <input
+                    type="url"
+                    required
+                    value={serverUrl}
+                    onChange={(e) => setServerUrl(e.target.value)}
+                    placeholder="https://books.raviwarrier.net or http://localhost:13378"
+                    className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors font-mono pr-20"
+                  />
+                  {!isIpPortUrl(serverUrl) && isEditingPublicUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingPublicUrl(false)}
+                      className="absolute right-1.5 px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-[10px] font-medium border border-neutral-600 flex items-center gap-1"
+                    >
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      <span>Lock</span>
+                    </button>
+                  )}
+                </div>
+                {!isIpPortUrl(serverUrl) && (
+                  <p className="text-[10px] text-neutral-400">
+                    Public domain detected. Click Lock when finished to lock this URL.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center justify-between p-2.5 bg-[#141414] border border-neutral-700">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Globe className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span className="text-white text-xs font-mono font-medium truncate">
+                    {serverUrl}
+                  </span>
+                  <span className="text-[10px] bg-emerald-950/80 text-emerald-300 border border-emerald-800 px-1.5 py-0.2 shrink-0 font-sans">
+                    Configured Server
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingPublicUrl(true)}
+                  className="text-xs text-neutral-300 hover:text-white px-2.5 py-1 border border-neutral-700 hover:border-neutral-500 bg-[#1e1e1e] flex items-center gap-1.5 shrink-0 ml-3 transition-colors cursor-pointer"
+                >
+                  <Pencil className="w-3 h-3" />
+                  <span>Edit URL</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Auth Mode Select */}
@@ -320,6 +389,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
+          {/* Remember Connection Checkbox */}
+          <div className="pt-2 border-t border-neutral-800/80 flex items-center justify-between">
+            <label className="flex items-center gap-2 text-xs text-neutral-300 hover:text-white cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={rememberCredentials}
+                onChange={(e) => setRememberCredentials(e.target.checked)}
+                className="accent-neutral-200 w-3.5 h-3.5 cursor-pointer"
+              />
+              <span>Remember connection on this device (auto-reconnects on reload)</span>
+            </label>
+          </div>
+
           {/* Action Buttons */}
           <div className="pt-3 border-t border-neutral-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
             {/* Demo session link hidden from user interface per admin configuration */}
@@ -368,9 +450,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         <div className="mt-4 pt-3 border-t border-neutral-900 flex items-center justify-between text-[11px] text-neutral-500">
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="w-3.5 h-3.5 text-neutral-400" />
-            <span>Zero Persistent Storage: Tokens vanish on refresh/exit</span>
+            <span>
+              {rememberCredentials 
+                ? 'Connection stored securely in local browser storage on this device' 
+                : 'Single-Session: Connection details vanish on refresh'}
+            </span>
           </div>
-          <span>v1.0</span>
+          <span>v1.2</span>
         </div>
 
       </div>

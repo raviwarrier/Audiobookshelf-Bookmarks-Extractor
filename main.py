@@ -11,6 +11,7 @@ import re
 import json
 import shutil
 import asyncio
+import threading
 import subprocess
 import logging
 from datetime import datetime
@@ -80,6 +81,17 @@ WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
 SNIPPET_DURATION = int(os.environ.get("SNIPPET_DURATION", "60"))
 SNIPPET_PRE_ROLL = float(os.environ.get("SNIPPET_PRE_ROLL", "30.0"))
+
+# Intercepted Bookmarks Default Timing Configuration (from ecosystem.config.cjs or env)
+# Configures default duration and pre-roll ONLY for bookmarks intercepted from mobile/web apps.
+INTERCEPT_SNIPPET_DURATION = int(os.environ.get("INTERCEPT_SNIPPET_DURATION", os.environ.get("INTERCEPT_DURATION", str(SNIPPET_DURATION))))
+INTERCEPT_PRE_ROLL = float(os.environ.get("INTERCEPT_PRE_ROLL", str(SNIPPET_PRE_ROLL)))
+DEFAULT_ABS_URL = os.environ.get("DEFAULT_ABS_URL", os.environ.get("ABS_PUBLIC_URL", "")).strip()
+
+# In-memory tracking of recent extraction completions for real-time frontend notifications
+_recent_extractions: List[Dict[str, Any]] = []
+_extractions_lock = threading.Lock()
+
 AUDIOBOOKS_PATH = os.environ.get("AUDIOBOOKS_PATH", "").strip().rstrip("/")
 PATH_MAPPINGS = os.environ.get("PATH_MAPPINGS", "").strip()
 
@@ -667,6 +679,27 @@ class SnippetRequest(BaseModel):
     absServerUrl: Optional[str] = None
 
 
+class SnippetExpandRequest(BaseModel):
+    """
+    Payload for adjusting, expanding, or re-extracting an existing snippet.
+    Re-clips audio using new pre-roll and post-roll durations and updates in-place.
+    """
+    timestamp: str
+    current_time: Optional[float] = None
+    currentTime: Optional[float] = None
+    pre_roll: Optional[float] = 30.0
+    preRoll: Optional[float] = None
+    post_roll: Optional[float] = 60.0
+    postRoll: Optional[float] = None
+    library_item_id: Optional[str] = None
+    libraryItemId: Optional[str] = None
+    book_title: Optional[str] = None
+    bookTitle: Optional[str] = None
+    token: Optional[str] = None
+    server_url: Optional[str] = None
+    serverUrl: Optional[str] = None
+
+
 def format_bookmarked_duration(seconds: float) -> str:
     """Format duration into HH:MM:SS (SSSS seconds) format."""
     total_sec = int(round(seconds))
@@ -924,6 +957,9 @@ def process_bookmark_extraction(
     snippet_request: Optional[SnippetRequest] = None,
     user_info: Optional[Dict[str, Any]] = None,
     custom_start: Optional[float] = None,
+    custom_pre_roll: Optional[float] = None,
+    is_intercepted: bool = False,
+    replace_timestamp: Optional[str] = None,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -975,7 +1011,14 @@ def process_bookmark_extraction(
     username = user["username"]
     safe_username = sanitize_filename(username)
 
-    effective_duration = duration or (snippet_request.duration if snippet_request else None) or SNIPPET_DURATION
+    if duration is not None:
+        effective_duration = int(duration)
+    elif is_intercepted:
+        effective_duration = INTERCEPT_SNIPPET_DURATION
+    elif snippet_request and snippet_request.duration:
+        effective_duration = int(snippet_request.duration)
+    else:
+        effective_duration = SNIPPET_DURATION
 
     # 3. Build or normalize snippet request
     if snippet_request is None:
@@ -1026,9 +1069,10 @@ def process_bookmark_extraction(
         start_time = float(snippet_request.start_time or snippet_request.startTime)
     else:
         file_relative_offset = max(0.0, current_time - start_offset)
-        start_time = max(0.0, file_relative_offset - SNIPPET_PRE_ROLL)
+        pre_roll_val = custom_pre_roll if custom_pre_roll is not None else (INTERCEPT_PRE_ROLL if is_intercepted else SNIPPET_PRE_ROLL)
+        start_time = max(0.0, file_relative_offset - pre_roll_val)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = replace_timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # 6. User-Specific Volume Folder Structure:
     # {VOLUME_DIR}/{username}/bookmarks/{safe_book_title}/
@@ -1252,6 +1296,21 @@ transcription_engine: "{engine_used}"
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(meta_content, f, indent=2)
 
+    # Record event in thread-safe recent list for real-time notification
+    with _extractions_lock:
+        _recent_extractions.append({
+            "id": f"{safe_book_title}-{timestamp}",
+            "book_title": full_book_title,
+            "author": author,
+            "chapter": chapter_display,
+            "timestamp": timestamp,
+            "username": username,
+            "completed_at": datetime.now().isoformat(),
+            "extraction_method": "intercepted" if (bookmark_data or is_intercepted) else "manual"
+        })
+        if len(_recent_extractions) > 100:
+            _recent_extractions.pop(0)
+
     logger.info(f"Successfully processed bookmark extraction for '{full_book_title}' [{timestamp}] by user '{username}'")
 
     return {
@@ -1394,12 +1453,15 @@ async def intercept_bookmark_create(library_item_id: str, request: Request, libr
         # Asynchronous non-blocking background queue task
         def _safe_background_task():
             try:
-                print(f"[*] Worker starting extraction for item '{library_item_id}'...", flush=True)
+                print(f"[*] Worker starting extraction for item '{library_item_id}' (duration={INTERCEPT_SNIPPET_DURATION}s, pre_roll={INTERCEPT_PRE_ROLL}s)...", flush=True)
                 res = process_bookmark_extraction(
                     library_item_id=library_item_id,
                     bookmark_data=bookmark_data,
                     auth_token=auth_token,
-                    server_url=target_server
+                    server_url=target_server,
+                    duration=INTERCEPT_SNIPPET_DURATION,
+                    custom_pre_roll=INTERCEPT_PRE_ROLL,
+                    is_intercepted=True
                 )
                 print(f"[✓] Worker finished extraction: {res.get('snippet', {}).get('mp3_file')}", flush=True)
             except Exception as bg_err:
@@ -1598,14 +1660,17 @@ async def get_user_bookmarks(
                                 transcript_text = f"{header}{transcript_text}"
 
                             seen_ids.add(item_unique_key)
+                            cur_time_val = float(metadata.get("current_time", float(metadata.get("start_time", 0.0)) + (float(metadata.get("duration", 60)) / 2.0)))
                             bookmarks.append({
                                 "id": f"{book_dir}-{base_name}",
                                 "book_title": metadata.get("book_title") or book_dir,
                                 "author": metadata.get("author") or "Unknown Author",
                                 "chapter": metadata.get("chapter") or "",
                                 "timestamp": base_name,
-                                "start_time": metadata.get("start_time", 0.0),
-                                "duration": metadata.get("duration", 60),
+                                "start_time": float(metadata.get("start_time", 0.0)),
+                                "current_time": cur_time_val,
+                                "duration": int(metadata.get("duration", 60)),
+                                "library_item_id": metadata.get("library_item_id") or "",
                                 "transcript": transcript_text,
                                 "audio_url": f"/bookmarks/{u}/{book_dir}/{base_name}.mp3" if has_mp3 else None,
                                 "md_url": f"/bookmarks/{u}/{book_dir}/{fname}",
@@ -1622,6 +1687,207 @@ async def get_user_bookmarks(
         "count": len(bookmarks),
         "bookmarks": bookmarks
     }
+
+
+@app.get("/api/user/bookmarks/status")
+@app.get("/api/snippets/status")
+async def get_bookmarks_status(
+    request: Request,
+    raw_token: str = Depends(extract_token_flexible)
+):
+    """
+    Returns the real-time extraction completion status for the authenticated user.
+    Used by the Web UI to automatically detect and notify completed bookmarks without requiring manual reload.
+    """
+    server_url = resolve_abs_server_url(
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url") or request.headers.get("X-ABS-URL"),
+        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+    )
+    user = validate_abs_token(raw_token, server_url=server_url)
+    username = user["username"]
+
+    with _extractions_lock:
+        user_events = [e for e in _recent_extractions if e.get("username", "").lower() == username.lower()]
+
+    return {
+        "status": "ok",
+        "username": username,
+        "total_recent": len(user_events),
+        "recent": user_events[-10:] if user_events else []
+    }
+
+
+@app.post("/api/snippet/expand")
+@app.post("/api/snippet/update")
+async def expand_or_update_snippet(
+    request: Request,
+    payload: SnippetExpandRequest,
+    raw_token: str = Depends(extract_token_flexible)
+):
+    """
+    Adjusts and expands an existing snippet with new pre-roll and post-roll durations.
+    Re-clips the audio and re-runs transcription, replacing the previous version in-place.
+    """
+    server_url = resolve_abs_server_url(
+        req_url=payload.server_url or payload.serverUrl,
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url") or request.headers.get("X-ABS-URL"),
+        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+    )
+    user = validate_abs_token(raw_token, server_url=server_url)
+    username = user["username"]
+    safe_username = sanitize_filename(username)
+
+    target_ts = payload.timestamp.strip()
+    pre_roll = float(payload.preRoll if payload.preRoll is not None else (payload.pre_roll or 30.0))
+    post_roll = float(payload.postRoll if payload.postRoll is not None else (payload.post_roll or 60.0))
+    total_duration = max(5, int(round(pre_roll + post_roll)))
+
+    cur_time = payload.currentTime if payload.currentTime is not None else payload.current_time
+    lib_id = payload.libraryItemId or payload.library_item_id
+
+    # If anchor timestamp or library item id is missing, look up existing snippet JSON metadata
+    if cur_time is None or not lib_id:
+        for root in get_candidate_volume_dirs():
+            for u in [safe_username, safe_username.lower(), user["id"]]:
+                u_dir = os.path.join(root, u, "bookmarks")
+                if not os.path.isdir(u_dir):
+                    u_dir = os.path.join(root, u)
+                if os.path.isdir(u_dir):
+                    for b_dir in os.listdir(u_dir):
+                        json_file = os.path.join(u_dir, b_dir, f"{target_ts}.json")
+                        if os.path.isfile(json_file):
+                            try:
+                                with open(json_file, "r", encoding="utf-8") as jf:
+                                    existing_meta = json.load(jf)
+                                    if cur_time is None:
+                                        cur_time = existing_meta.get("current_time", existing_meta.get("start_time", 0.0) + 30.0)
+                                    if not lib_id:
+                                        lib_id = existing_meta.get("library_item_id")
+                            except Exception:
+                                pass
+                            break
+
+    if cur_time is None:
+        cur_time = 0.0
+
+    new_start_time = max(0.0, float(cur_time) - pre_roll)
+
+    logger.info(f"Expanding snippet [{target_ts}] for @{username}: anchor={cur_time}s, pre_roll={pre_roll}s, post_roll={post_roll}s (start={new_start_time}s, duration={total_duration}s)")
+
+    # Execute extraction with replace_timestamp so old snippet is overwritten in-place
+    result = process_bookmark_extraction(
+        library_item_id=lib_id,
+        auth_token=raw_token,
+        server_url=server_url,
+        duration=total_duration,
+        user_info=user,
+        custom_start=new_start_time,
+        replace_timestamp=target_ts
+    )
+    return result
+
+
+@app.get("/api/user/bookmarks/export-book")
+@app.get("/api/snippets/export-book")
+async def export_book_snippets(
+    book_title: str = Query(..., description="Title of the book to export"),
+    format: str = Query("zip", description="Export format: 'zip' or 'markdown'"),
+    request: Request = None,
+    raw_token: str = Depends(extract_token_flexible)
+):
+    """
+    Exports all snippets and bookmarks from the specified book at once.
+    Provides either a complete ZIP archive (MP3 clips + Markdown notes + JSON) or a single combined Markdown document.
+    """
+    import io
+    import zipfile
+
+    server_url = resolve_abs_server_url(
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url") or request.headers.get("X-ABS-URL"),
+        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+    )
+    user = validate_abs_token(raw_token, server_url=server_url)
+    username = user["username"]
+    safe_username = sanitize_filename(username)
+    safe_book_title = sanitize_filename(book_title)
+
+    # Locate book directory
+    book_dir_path = None
+    candidate_roots = get_candidate_volume_dirs()
+    user_search_names = list(dict.fromkeys([safe_username, safe_username.lower(), user["id"]]))
+
+    for root in candidate_roots:
+        for u in user_search_names:
+            for possible_user_dir in [os.path.join(root, u, "bookmarks"), os.path.join(root, u)]:
+                candidate_book_dir = os.path.join(possible_user_dir, safe_book_title)
+                if os.path.isdir(candidate_book_dir):
+                    book_dir_path = candidate_book_dir
+                    break
+                if os.path.isdir(possible_user_dir):
+                    for b_entry in os.listdir(possible_user_dir):
+                        if b_entry.lower() == safe_book_title.lower() and os.path.isdir(os.path.join(possible_user_dir, b_entry)):
+                            book_dir_path = os.path.join(possible_user_dir, b_entry)
+                            break
+                if book_dir_path:
+                    break
+            if book_dir_path:
+                break
+        if book_dir_path:
+            break
+
+    if not book_dir_path or not os.path.isdir(book_dir_path):
+        raise HTTPException(status_code=404, detail=f"No snippets found for book '{book_title}'")
+
+    if format.lower() in ("markdown", "md"):
+        md_files = sorted([f for f in os.listdir(book_dir_path) if f.endswith(".md")])
+        if not md_files:
+            raise HTTPException(status_code=404, detail="No markdown notes found for this book")
+
+        combined_lines = [
+            f"# {book_title} - All Bookmarks & Transcripts\n",
+            f"*Exported on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} for @{username}*\n\n---\n"
+        ]
+        for idx, md_f in enumerate(md_files, 1):
+            with open(os.path.join(book_dir_path, md_f), "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            combined_lines.append(f"## Bookmark {idx} ({md_f[:-3]})\n\n{content}\n\n---\n")
+
+        combined_text = "\n".join(combined_lines)
+        filename = f"{safe_book_title}_All_Snippets.md"
+        return Response(
+            content=combined_text,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    # Default: ZIP archive containing all audio and notes
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        md_files = []
+        for fname in sorted(os.listdir(book_dir_path)):
+            fpath = os.path.join(book_dir_path, fname)
+            if os.path.isfile(fpath):
+                zf.write(fpath, arcname=f"{safe_book_title}/{fname}")
+                if fname.endswith(".md"):
+                    md_files.append(fname)
+
+        if md_files:
+            summary_lines = [
+                f"# {book_title} - All Notes Summary\n",
+                f"*Exported on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} for @{username}*\n\n"
+            ]
+            for idx, md_f in enumerate(md_files, 1):
+                with open(os.path.join(book_dir_path, md_f), "r", encoding="utf-8") as f:
+                    summary_lines.append(f"### {idx}. {md_f[:-3]}\n\n{f.read().strip()}\n\n---\n")
+            zf.writestr(f"{safe_book_title}/ALL_NOTES_COMBINED.md", "\n".join(summary_lines))
+
+    zip_bytes = zip_buffer.getvalue()
+    filename = f"{safe_book_title}_All_Snippets.zip"
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 @app.delete("/api/user/bookmarks/{snippet_id:path}")

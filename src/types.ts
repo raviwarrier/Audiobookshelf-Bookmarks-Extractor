@@ -47,6 +47,7 @@ export interface Snippet {
   chapterName: string;
   timestamp: string;
   startTime: number;
+  currentTime?: number;
   duration: number;
   audioUrl: string;
   transcript: string;
@@ -54,4 +55,16 @@ export interface Snippet {
   createdAt: number;
   userId?: string;
   username?: string;
+  libraryItemId?: string;
+}
+
+export interface StoredCredentials {
+  serverUrl: string;
+  sidecarUrl?: string;
+  useProxy?: boolean;
+  authMode: 'token' | 'userpass';
+  token?: string;
+  username?: string;
+  password?: string;
+  remember: boolean;
 }

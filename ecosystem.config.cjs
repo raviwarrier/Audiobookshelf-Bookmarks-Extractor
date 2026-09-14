@@ -70,7 +70,8 @@ module.exports = {
         // Server Admin Configurations (automatically provided to connected clients):
         SIDECAR_URL: SIDECAR_URL_CONFIG, // Sidecar service URL (configured in OPTION A, B, or C above)
         USE_BACKEND_PROXY: 'true', // Bypasses browser CORS errors and proxies audio/API calls for all clients
-        ABS_TARGET_SERVER: 'http://192.168.68.102:13378' // Default Audiobookshelf server (use Host LAN IP for Dockerized ABS)
+        DEFAULT_ABS_URL: 'https://books.raviwarrier.net', // Default public URL presented to users in Auth Modal
+        ABS_TARGET_SERVER: 'http://192.168.68.102:13378' // Internal upstream Audiobookshelf server (use Host LAN IP for Dockerized ABS)
       }
     },
     // 2. Python Audio Slicing & Transcription Sidecar
@@ -86,6 +87,10 @@ module.exports = {
         PORT: 13380, // Sidecar & Interceptor proxy port
         SIDECAR_PORT: 13380,
         ABS_TARGET_SERVER: 'http://192.168.68.102:13378', // Upstream ABS URL (use Host LAN IP like 192.168.x.x if ABS runs in Docker)
+        // Intercepted Bookmarks Default Timing Configuration:
+        // Configures default snippet duration and pre-roll ONLY for bookmarks intercepted from mobile/web apps.
+        INTERCEPT_SNIPPET_DURATION: 60, // Total duration in seconds for intercepted bookmarks (e.g. 60, 90, 120)
+        INTERCEPT_PRE_ROLL: 30, // Seconds captured before the bookmark point (e.g. 30)
         VOLUME_DIR: '/srv/ssd/Appdata/local/advplyr-bookshelf/bookmarks', // Output directory for bookmarks (auto-scans /srv/ssd/Bookshelf/... as fallback)
         AUDIOBOOKS_PATH: '/srv/ssd/Bookshelf/Audiobooks', // Host path to audiobooks
         PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries' // Docker container:host directory mappings

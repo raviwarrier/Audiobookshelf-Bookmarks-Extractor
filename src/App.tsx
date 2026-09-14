@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { CaptureView } from './components/CaptureView';
 import { SnippetsView } from './components/SnippetsView';
@@ -6,6 +6,8 @@ import { AuthModal } from './components/AuthModal';
 import { AbsUser, AbsActiveSession, Snippet } from './types';
 import { wipeSessionKey } from './lib/crypto';
 import { authenticateAbs, fetchActiveSession, formatAuthors } from './lib/absClient';
+import { getStoredCredentials, clearStoredCredentials } from './lib/authStorage';
+import { CheckCircle2, X, Bell } from 'lucide-react';
 
 // Helper to determine initial default sidecar URL
 function getDefaultSidecarUrl(): string {
@@ -23,7 +25,6 @@ function getDefaultSidecarUrl(): string {
 export function getPlayableAudioUrl(rawUrl?: string, targetSidecar?: string, proxyEnabled: boolean = true): string {
   if (!rawUrl) return '';
   if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
-    // If an external client received a URL pointing to localhost:13380, strip host to route relatively via web server
     if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
       try {
         const parsed = new URL(rawUrl);
@@ -35,7 +36,6 @@ export function getPlayableAudioUrl(rawUrl?: string, targetSidecar?: string, pro
     return rawUrl;
   }
   const cleanPath = rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`;
-  // Prefer relative URL handled by dashboard proxy whenever proxy is enabled or sidecar is localhost
   if (proxyEnabled || !targetSidecar || targetSidecar.includes('localhost') || targetSidecar.includes('127.0.0.1')) {
     return cleanPath;
   }
@@ -45,49 +45,29 @@ export function getPlayableAudioUrl(rawUrl?: string, targetSidecar?: string, pro
 export function App() {
   const [activeView, setActiveView] = useState<'capture' | 'library'>('capture');
   
-  // Single-session in-memory credentials & connection state (never stored to disk/localStorage)
+  // Connection and Authentication State
   const [user, setUser] = useState<AbsUser | null>(null);
   const [activeToken, setActiveToken] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState<string>('http://localhost:13378');
   const [sidecarUrl, setSidecarUrl] = useState<string>(getDefaultSidecarUrl());
   const [useProxy, setUseProxy] = useState<boolean>(true);
 
-  // Auto-detect server-configured sidecar port or ABS server URL from backend
-  useEffect(() => {
-    fetch('/api/config')
-      .then((res) => res.json())
-      .then((cfg) => {
-        if (cfg?.ok) {
-          if (cfg.sidecarUrl) {
-            setSidecarUrl(cfg.sidecarUrl);
-          } else if (cfg.sidecarPort) {
-            const host = (typeof window !== 'undefined' && window.location?.hostname && !window.location.hostname.includes('run.app'))
-              ? window.location.hostname
-              : 'localhost';
-            setSidecarUrl(`http://${host}:${cfg.sidecarPort}`);
-          }
-          if (cfg.useBackendProxy !== undefined) {
-            setUseProxy(Boolean(cfg.useBackendProxy));
-          }
-          if (cfg.absTargetServer && cfg.absTargetServer !== 'http://audiobookshelf:80') {
-            setServerUrl(cfg.absTargetServer);
-          }
-        }
-      })
-      .catch(() => {});
-  }, []);
-
   // Active Listening Session
   const [session, setSession] = useState<AbsActiveSession | null>(null);
   const [isLoadingSession, setIsLoadingSession] = useState<boolean>(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
-  // Auth modal opens automatically on initial app load if no active user session exists
+  // Auth modal control
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(true);
 
-  // Snippets library state (initialized empty - no dummy or mock snippets)
+  // Snippets library state
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [isLoadingBookmarks, setIsLoadingBookmarks] = useState<boolean>(false);
+
+  // Notification toast for automatic background detection
+  const [notification, setNotification] = useState<{ message: string; id: string } | null>(null);
+  const lastKnownTimestampRef = useRef<string | null>(null);
+  const isSyncingRef = useRef<boolean>(false);
 
   // Sync user's bookmarks from sidecar's {username}/bookmarks directory
   const syncUserBookmarks = useCallback(async (
@@ -96,9 +76,14 @@ export function App() {
     username: string,
     proxyEnabled: boolean
   ) => {
+    if (isSyncingRef.current) return;
+    isSyncingRef.current = true;
     setIsLoadingBookmarks(true);
+
     try {
       const endpoint = `${targetSidecar.replace(/\/+$/, '')}/api/user/bookmarks`;
+      let bookmarksList: any[] = [];
+
       if (proxyEnabled) {
         const res = await fetch('/api/proxy/abs', {
           method: 'POST',
@@ -114,21 +99,7 @@ export function App() {
         });
         const json = await res.json();
         if (json.ok && json.data && Array.isArray(json.data.bookmarks)) {
-          const sidecarBookmarks: Snippet[] = json.data.bookmarks.map((b: any) => ({
-            id: b.id || `b-${b.timestamp}`,
-            bookTitle: b.book_title,
-            author: formatAuthors(b.author, b.authors, b.authorName),
-            chapterName: b.chapter,
-            timestamp: b.timestamp,
-            startTime: b.start_time,
-            duration: b.duration,
-            audioUrl: getPlayableAudioUrl(b.audio_url, targetSidecar, true),
-            transcript: b.transcript,
-            markdownContent: `# ${b.book_title}\n\n${b.transcript}`,
-            createdAt: b.created_at ? new Date(b.created_at).getTime() : Date.now(),
-            username: b.username || username
-          }));
-          setSnippets(sidecarBookmarks);
+          bookmarksList = json.data.bookmarks;
         }
       } else {
         const res = await fetch(endpoint, {
@@ -140,28 +111,40 @@ export function App() {
         if (res.ok) {
           const data = await res.json();
           if (data && Array.isArray(data.bookmarks)) {
-            const sidecarBookmarks: Snippet[] = data.bookmarks.map((b: any) => ({
-              id: b.id || `b-${b.timestamp}`,
-              bookTitle: b.book_title,
-              author: formatAuthors(b.author, b.authors, b.authorName),
-              chapterName: b.chapter,
-              timestamp: b.timestamp,
-              startTime: b.start_time,
-              duration: b.duration,
-              audioUrl: getPlayableAudioUrl(b.audio_url, targetSidecar, proxyEnabled),
-              transcript: b.transcript,
-              markdownContent: `# ${b.book_title}\n\n${b.transcript}`,
-              createdAt: b.created_at ? new Date(b.created_at).getTime() : Date.now(),
-              username: b.username || username
-            }));
-            setSnippets(sidecarBookmarks);
+            bookmarksList = data.bookmarks;
           }
+        }
+      }
+
+      if (bookmarksList.length > 0) {
+        const sidecarBookmarks: Snippet[] = bookmarksList.map((b: any) => ({
+          id: b.id || `b-${b.timestamp}`,
+          bookTitle: b.book_title,
+          author: formatAuthors(b.author, b.authors, b.authorName),
+          chapterName: b.chapter,
+          timestamp: b.timestamp,
+          startTime: b.start_time,
+          currentTime: b.current_time,
+          libraryItemId: b.library_item_id,
+          duration: b.duration,
+          audioUrl: getPlayableAudioUrl(b.audio_url, targetSidecar, proxyEnabled),
+          transcript: b.transcript,
+          markdownContent: `# ${b.book_title}\n\n${b.transcript}`,
+          createdAt: b.created_at ? new Date(b.created_at).getTime() : Date.now(),
+          username: b.username || username
+        }));
+        setSnippets(sidecarBookmarks);
+
+        // Update latest known timestamp
+        if (sidecarBookmarks[0]?.timestamp) {
+          lastKnownTimestampRef.current = sidecarBookmarks[0].timestamp;
         }
       }
     } catch (err) {
       console.warn('Sidecar bookmarks sync notice:', err);
     } finally {
       setIsLoadingBookmarks(false);
+      isSyncingRef.current = false;
     }
   }, [serverUrl]);
 
@@ -200,7 +183,6 @@ export function App() {
     setUseProxy(params.useProxy);
 
     if (params.isMock) {
-      // Mock session for exploratory demo
       const mockUser = { id: 'usr_mock', username: 'bookworm_user' };
       setUser(mockUser);
       setActiveToken('mock_token_demo');
@@ -218,7 +200,6 @@ export function App() {
       return;
     }
 
-    // Live authentication against Audiobookshelf
     const authResult = await authenticateAbs(
       params.serverUrl,
       params.authMode,
@@ -232,10 +213,138 @@ export function App() {
     setActiveToken(authResult.token);
     setIsAuthModalOpen(false);
 
-    // Automatically load the active listening session and sync bookmarks in background
     loadActiveSession(params.serverUrl, authResult.token, params.useProxy);
     syncUserBookmarks(params.sidecarUrl, authResult.token, authResult.user.username, params.useProxy);
   };
+
+  // On App Mount: Auto-login from persistent saved credentials if available
+  useEffect(() => {
+    // 1. Fetch system config first
+    fetch('/api/config')
+      .then((res) => res.json())
+      .then(async (cfg) => {
+        let initialServer = 'http://localhost:13378';
+        let initialSidecar = getDefaultSidecarUrl();
+        let initialProxy = true;
+
+        if (cfg?.ok) {
+          if (cfg.defaultAbsUrl) {
+            initialServer = cfg.defaultAbsUrl;
+          } else if (cfg.absTargetServer && cfg.absTargetServer !== 'http://audiobookshelf:80') {
+            initialServer = cfg.absTargetServer;
+          }
+          if (cfg.sidecarUrl) {
+            initialSidecar = cfg.sidecarUrl;
+          }
+          if (cfg.useBackendProxy !== undefined) {
+            initialProxy = Boolean(cfg.useBackendProxy);
+          }
+          setServerUrl(initialServer);
+          setSidecarUrl(initialSidecar);
+          setUseProxy(initialProxy);
+        }
+
+        // 2. Check if user previously saved credentials on this device
+        const saved = getStoredCredentials();
+        if (saved && (saved.token || (saved.username && saved.password))) {
+          try {
+            const targetServerToUse = saved.serverUrl || initialServer;
+            const targetSidecarToUse = saved.sidecarUrl || initialSidecar;
+            const proxyToUse = saved.useProxy !== undefined ? saved.useProxy : initialProxy;
+
+            const authResult = await authenticateAbs(
+              targetServerToUse,
+              saved.authMode,
+              saved.token,
+              saved.username,
+              saved.password,
+              proxyToUse
+            );
+
+            setUser(authResult.user);
+            setActiveToken(authResult.token);
+            setServerUrl(targetServerToUse);
+            setSidecarUrl(targetSidecarToUse);
+            setUseProxy(proxyToUse);
+            setIsAuthModalOpen(false);
+
+            loadActiveSession(targetServerToUse, authResult.token, proxyToUse);
+            syncUserBookmarks(targetSidecarToUse, authResult.token, authResult.user.username, proxyToUse);
+          } catch (autoErr) {
+            console.warn('Auto-reconnect with saved credentials notice:', autoErr);
+            setIsAuthModalOpen(true);
+          }
+        } else {
+          setIsAuthModalOpen(true);
+        }
+      })
+      .catch(() => {
+        setIsAuthModalOpen(true);
+      });
+  }, [loadActiveSession, syncUserBookmarks]);
+
+  // Automated Real-Time Background Polling:
+  // Detects newly completed manual or intercepted bookmarks and refreshes the snippets view automatically!
+  useEffect(() => {
+    if (!activeToken || !user) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const endpoint = `${sidecarUrl.replace(/\/+$/, '')}/api/user/bookmarks/status`;
+        let statusData: any = null;
+
+        if (useProxy) {
+          const res = await fetch('/api/proxy/abs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              targetUrl: endpoint,
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${activeToken}`,
+                'X-ABS-Server-Url': serverUrl,
+              }
+            })
+          });
+          const json = await res.json();
+          if (json.ok && json.data) {
+            statusData = json.data;
+          }
+        } else {
+          const res = await fetch(endpoint, {
+            headers: {
+              'Authorization': `Bearer ${activeToken}`,
+              'X-ABS-Server-Url': serverUrl,
+            }
+          });
+          if (res.ok) {
+            statusData = await res.json();
+          }
+        }
+
+        if (statusData && Array.isArray(statusData.recent) && statusData.recent.length > 0) {
+          const latestEvent = statusData.recent[statusData.recent.length - 1];
+          if (latestEvent?.timestamp && latestEvent.timestamp !== lastKnownTimestampRef.current) {
+            lastKnownTimestampRef.current = latestEvent.timestamp;
+            // Trigger automatic sync
+            await syncUserBookmarks(sidecarUrl, activeToken, user.username, useProxy);
+            
+            // Show toast notification
+            const methodLabel = latestEvent.extraction_method === 'intercepted' ? 'mobile bookmark' : 'snippet';
+            setNotification({
+              id: latestEvent.timestamp,
+              message: `New ${methodLabel} ready: "${latestEvent.book_title}" (${latestEvent.timestamp})`,
+            });
+            setTimeout(() => setNotification(null), 6000);
+          }
+        }
+      } catch {
+        // Silent catch for background heartbeat
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [activeToken, user, sidecarUrl, serverUrl, useProxy, syncUserBookmarks]);
 
   // Re-sync session playback position on demand
   const handleRefreshSession = async () => {
@@ -243,25 +352,41 @@ export function App() {
     await loadActiveSession(serverUrl, activeToken, useProxy);
   };
 
-  // Wipes all in-memory credentials immediately
+  // Wipes in-memory session and clears saved credentials from local storage
   const handleWipeSession = () => {
     setUser(null);
     setActiveToken(null);
     setSession(null);
     setSessionError(null);
+    clearStoredCredentials();
     wipeSessionKey();
     setIsAuthModalOpen(true);
   };
 
-  const handleSnippetCreated = (newSnippet: Snippet) => {
+  // When a snippet is manually created:
+  // 1. Instantly adds it to state
+  // 2. Re-syncs full library from server
+  // 3. Switches active view to library so user immediately sees the snippet without refreshing!
+  const handleSnippetCreated = async (newSnippet: Snippet) => {
     setSnippets((prev) => [newSnippet, ...prev]);
+    setNotification({
+      id: newSnippet.timestamp,
+      message: `Snippet created: "${newSnippet.bookTitle}" (${newSnippet.duration}s)!`,
+    });
+    setTimeout(() => setNotification(null), 5000);
+    
+    // Switch to library view immediately
+    setActiveView('library');
+
+    // Sync from server in background to ensure all metadata is uniform
+    if (activeToken && user) {
+      await syncUserBookmarks(sidecarUrl, activeToken, user.username, useProxy);
+    }
   };
 
   const handleDeleteSnippet = async (id: string) => {
-    // 1. Immediately remove from UI state for instant response
     setSnippets((prev) => prev.filter((s) => s.id !== id));
 
-    // 2. Permanently delete from sidecar server storage if connected
     if (activeToken && sidecarUrl) {
       try {
         const endpoint = `${sidecarUrl.replace(/\/+$/, '')}/api/user/bookmarks/${encodeURIComponent(id)}`;
@@ -294,7 +419,39 @@ export function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#050505] text-neutral-200 font-mono flex flex-col">
+    <div className="min-h-screen bg-[#050505] text-neutral-200 font-mono flex flex-col relative">
+      
+      {/* Real-time Notification Banner for Newly Extracted Bookmarks */}
+      {notification && (
+        <aside 
+          aria-label="New bookmark notification"
+          className="fixed top-4 right-4 z-50 bg-[#121212] border border-emerald-500/80 text-white px-4 py-3 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-2 duration-300 max-w-md"
+        >
+          <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+            <CheckCircle2 className="w-4 h-4" />
+          </div>
+          <div className="text-xs space-y-0.5 flex-1">
+            <div className="font-semibold text-emerald-300 flex items-center gap-1.5">
+              <Bell className="w-3 h-3" />
+              <span>Bookmark Detected & Transcribed</span>
+            </div>
+            <p className="text-neutral-300 truncate">{notification.message}</p>
+          </div>
+          <button
+            onClick={() => setActiveView('library')}
+            className="text-[11px] underline text-neutral-300 hover:text-white px-1.5 py-0.5"
+          >
+            View
+          </button>
+          <button
+            onClick={() => setNotification(null)}
+            className="text-neutral-400 hover:text-white p-1"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </aside>
+      )}
+
       {/* Navigation Header */}
       <Navbar
         activeView={activeView}
@@ -336,6 +493,10 @@ export function App() {
           <SnippetsView
             snippets={snippets}
             user={user}
+            activeToken={activeToken}
+            serverUrl={serverUrl}
+            sidecarUrl={sidecarUrl}
+            useProxy={useProxy}
             onDeleteSnippet={handleDeleteSnippet}
             onNavigateToCapture={() => setActiveView('capture')}
             onRefreshSnippets={async () => {
@@ -362,7 +523,7 @@ export function App() {
 
       {/* Minimal Footer */}
       <footer className="border-t border-neutral-900 px-6 py-4 text-center text-xs text-neutral-600 font-mono">
-        Audiobookshelf Bookmarks Manager • Single-Session In-Memory Security
+        Audiobookshelf Bookmarks Manager • Real-Time Synchronization Enabled
       </footer>
     </div>
   );

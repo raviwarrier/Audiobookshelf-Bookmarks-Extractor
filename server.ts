@@ -163,10 +163,76 @@ async function startServer() {
     }
   });
 
+  // Export Proxy: streams ZIP and Markdown book exports from sidecar service
+  app.get(["/api/export-book", "/api/user/bookmarks/export-book", "/api/snippets/export-book"], async (req, res) => {
+    try {
+      const sidecarBase = (process.env.SIDECAR_URL || `http://127.0.0.1:${process.env.SIDECAR_PORT || 13380}`).replace(/\/+$/, "");
+      const targetUrl = `${sidecarBase}${req.originalUrl}`;
+      const forwardHeaders: Record<string, string> = {};
+      if (req.headers.authorization) forwardHeaders["authorization"] = req.headers.authorization;
+      if (req.headers["x-abs-server-url"]) forwardHeaders["x-abs-server-url"] = req.headers["x-abs-server-url"] as string;
+
+      const sidecarRes = await fetch(targetUrl, { headers: forwardHeaders });
+      res.status(sidecarRes.status);
+      sidecarRes.headers.forEach((v, k) => res.setHeader(k, v));
+      if (sidecarRes.body) {
+        const { Readable } = await import("stream");
+        Readable.fromWeb(sidecarRes.body as any).pipe(res);
+      } else {
+        res.end();
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Book export proxy failed";
+      res.status(502).json({ error: msg });
+    }
+  });
+
+  // Direct proxy for Snippet Expand/Re-clip
+  app.post(["/api/snippet/expand", "/api/snippets/expand"], async (req, res) => {
+    try {
+      const sidecarBase = (process.env.SIDECAR_URL || `http://127.0.0.1:${process.env.SIDECAR_PORT || 13380}`).replace(/\/+$/, "");
+      const targetUrl = `${sidecarBase}/api/snippet/expand`;
+      const forwardHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (req.headers.authorization) forwardHeaders["authorization"] = req.headers.authorization;
+      if (req.headers["x-abs-server-url"]) forwardHeaders["x-abs-server-url"] = req.headers["x-abs-server-url"] as string;
+
+      const sidecarRes = await fetch(targetUrl, {
+        method: "POST",
+        headers: forwardHeaders,
+        body: JSON.stringify(req.body),
+      });
+
+      const data = await sidecarRes.json();
+      res.status(sidecarRes.status).json(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Snippet expand failed";
+      res.status(502).json({ error: msg });
+    }
+  });
+
+  // Direct proxy for Bookmarks Real-Time Status / Heartbeat
+  app.get(["/api/user/bookmarks/status", "/api/snippets/status"], async (req, res) => {
+    try {
+      const sidecarBase = (process.env.SIDECAR_URL || `http://127.0.0.1:${process.env.SIDECAR_PORT || 13380}`).replace(/\/+$/, "");
+      const targetUrl = `${sidecarBase}/api/user/bookmarks/status`;
+      const forwardHeaders: Record<string, string> = {};
+      if (req.headers.authorization) forwardHeaders["authorization"] = req.headers.authorization;
+      if (req.headers["x-abs-server-url"]) forwardHeaders["x-abs-server-url"] = req.headers["x-abs-server-url"] as string;
+
+      const sidecarRes = await fetch(targetUrl, { headers: forwardHeaders });
+      const data = await sidecarRes.json();
+      res.status(sidecarRes.status).json(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Status check failed";
+      res.status(502).json({ error: msg });
+    }
+  });
+
   // System configuration endpoint: provides detected ports & server URLs
   app.get("/api/config", (req, res) => {
     const sidecarPort = process.env.SIDECAR_PORT || 13380;
     const absServer = process.env.ABS_TARGET_SERVER || process.env.ABS_SERVER_URL || "";
+    const defaultAbsUrl = (process.env.DEFAULT_ABS_URL || process.env.ABS_PUBLIC_URL || absServer || "").trim();
     const sidecarUrl = process.env.SIDECAR_URL || `http://localhost:${sidecarPort}`;
     const useBackendProxy = process.env.USE_BACKEND_PROXY ? process.env.USE_BACKEND_PROXY !== "false" : true;
     res.json({
@@ -175,6 +241,7 @@ async function startServer() {
       sidecarUrl,
       useBackendProxy,
       absTargetServer: absServer,
+      defaultAbsUrl,
       webPort: PORT,
     });
   });
