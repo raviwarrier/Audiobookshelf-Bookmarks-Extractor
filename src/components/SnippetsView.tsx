@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Search, 
   Download, 
@@ -16,7 +16,8 @@ import {
   AlertTriangle,
   RotateCw,
   X,
-  BookOpen
+  BookOpen,
+  ChevronDown
 } from 'lucide-react';
 import { Snippet, AbsUser } from '../types';
 
@@ -60,6 +61,14 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
   const [exportingBook, setExportingBook] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [selectedBookFilter, setSelectedBookFilter] = useState<string | null>(null);
+  const [openExportDropdownId, setOpenExportDropdownId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!openExportDropdownId) return;
+    const handleGlobalClick = () => setOpenExportDropdownId(null);
+    window.addEventListener('click', handleGlobalClick);
+    return () => window.removeEventListener('click', handleGlobalClick);
+  }, [openExportDropdownId]);
 
   // Group snippets by unique books
   const uniqueBooks: string[] = Array.from(new Set(snippets.map((s) => s.bookTitle).filter(Boolean)));
@@ -318,48 +327,8 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
           )}
         </div>
 
-        {/* Quick Book Export Bar if books exist */}
-        {uniqueBooks.length > 0 && (
-          <div className="pt-2.5 border-t border-neutral-800/80 flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1.5 text-neutral-400 text-[11px] shrink-0">
-              <Archive className="w-3 h-3 text-neutral-400" />
-              <span>Export All Snippets by Book:</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {uniqueBooks.map((bTitle) => {
-                const isThisExporting = exportingBook === bTitle;
-                return (
-                  <div key={bTitle} className="inline-flex items-center gap-1 bg-[#161616] border border-neutral-700 px-2 py-1 text-[11px]">
-                    <span className="text-neutral-200 font-medium truncate max-w-[150px] sm:max-w-[220px]" title={bTitle}>
-                      {bTitle}
-                    </span>
-                    <span className="text-neutral-500">•</span>
-                    <button
-                      onClick={() => handleExportBook(bTitle, 'zip')}
-                      disabled={isThisExporting}
-                      title="Download complete ZIP (Audio MP3s + Markdown files)"
-                      className="text-neutral-300 hover:text-white underline disabled:opacity-50 transition-colors"
-                    >
-                      {isThisExporting ? 'Exporting...' : 'ZIP'}
-                    </button>
-                    <span className="text-neutral-600">/</span>
-                    <button
-                      onClick={() => handleExportBook(bTitle, 'markdown')}
-                      disabled={isThisExporting}
-                      title="Download combined single Markdown note"
-                      className="text-neutral-300 hover:text-white underline disabled:opacity-50 transition-colors"
-                    >
-                      Combined MD
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
         {exportError && (
-          <div className="text-[11px] text-red-400 flex items-center gap-1.5">
+          <div className="text-[11px] text-red-400 flex items-center gap-1.5 pt-1">
             <AlertTriangle className="w-3.5 h-3.5" />
             <span>{exportError}</span>
           </div>
@@ -512,19 +481,69 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
                     <Sliders className="w-3.5 h-3.5 text-neutral-300" />
                     <span>Adjust Duration / Context</span>
                   </button>
+
+                  {/* Export all from this book Dropdown */}
+                  <div className="relative">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenExportDropdownId(openExportDropdownId === snippet.id ? null : snippet.id);
+                      }}
+                      disabled={exportingBook === snippet.bookTitle}
+                      className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-700 bg-[#161616] hover:border-neutral-400 text-neutral-200 hover:text-white transition-colors disabled:opacity-50"
+                      title="Export all snippets from this book"
+                    >
+                      <Archive className="w-3.5 h-3.5 text-neutral-300" />
+                      <span>
+                        {exportingBook === snippet.bookTitle ? 'Exporting Book...' : 'Export all from this book'}
+                      </span>
+                      <ChevronDown
+                        className={`w-3 h-3 text-neutral-400 transition-transform ${
+                          openExportDropdownId === snippet.id ? 'rotate-180' : ''
+                        }`}
+                      />
+                    </button>
+
+                    {openExportDropdownId === snippet.id && (
+                      <div
+                        className="absolute left-0 mt-1 w-52 bg-[#181818] border border-neutral-700 shadow-xl z-20 font-mono py-1"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="px-3 py-1.5 text-[10px] text-neutral-400 border-b border-neutral-800 uppercase tracking-wider truncate">
+                          {snippet.bookTitle}
+                        </div>
+                        <button
+                          onClick={() => {
+                            setOpenExportDropdownId(null);
+                            handleExportBook(snippet.bookTitle, 'zip');
+                          }}
+                          className="w-full text-left px-3 py-2 text-xs text-neutral-200 hover:text-white hover:bg-[#222222] flex items-center justify-between transition-colors"
+                        >
+                          <span className="flex items-center gap-2">
+                            <Archive className="w-3.5 h-3.5 text-neutral-400" />
+                            <span>As Zip</span>
+                          </span>
+                          <span className="text-[10px] text-neutral-500 font-mono">.zip</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setOpenExportDropdownId(null);
+                            handleExportBook(snippet.bookTitle, 'markdown');
+                          }}
+                          className="w-full text-left px-3 py-2 text-xs text-neutral-200 hover:text-white hover:bg-[#222222] flex items-center justify-between transition-colors border-t border-neutral-800/60"
+                        >
+                          <span className="flex items-center gap-2">
+                            <FileText className="w-3.5 h-3.5 text-neutral-400" />
+                            <span>As .MD</span>
+                          </span>
+                          <span className="text-[10px] text-neutral-500 font-mono">.md</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => handleExportBook(snippet.bookTitle, 'zip')}
-                    disabled={exportingBook === snippet.bookTitle}
-                    className="text-neutral-400 hover:text-white flex items-center gap-1 text-[11px] underline transition-colors disabled:opacity-50"
-                    title="Export all snippets for this book as ZIP"
-                  >
-                    <Archive className="w-3 h-3" />
-                    <span>Export Book ({exportingBook === snippet.bookTitle ? '...' : 'ZIP'})</span>
-                  </button>
-
                   <button
                     onClick={() => onDeleteSnippet(snippet.id)}
                     className="text-neutral-400 hover:text-red-400 flex items-center gap-1 transition-colors"
