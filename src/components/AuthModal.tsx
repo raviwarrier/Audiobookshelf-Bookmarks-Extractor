@@ -56,26 +56,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     ? `http://${clientHost}:13380`
     : 'http://localhost:13380';
 
-  const [serverUrl, setServerUrl] = useState(currentServerUrl || defaultServerUrl || 'http://localhost:13378');
-  const [isEditingPublicUrl, setIsEditingPublicUrl] = useState(false);
-  const [rememberCredentials, setRememberCredentials] = useState(true);
-  const [sidecarUrl, setSidecarUrl] = useState(
-    currentSidecarUrl && !currentSidecarUrl.includes('[your ip:port') ? currentSidecarUrl : defaultLocalSidecar
-  );
-  const [useProxy, setUseProxy] = useState(currentUseProxy);
-  const [authMode, setAuthMode] = useState<'token' | 'userpass'>('token');
+  const savedInitial = typeof window !== 'undefined' ? getStoredCredentials() : null;
 
-  const [token, setToken] = useState('');
-  const [username, setUsername] = useState('');
+  const [serverUrl, setServerUrl] = useState(
+    savedInitial?.serverUrl || currentServerUrl || defaultServerUrl || 'http://localhost:13378'
+  );
+  const [isEditingPublicUrl, setIsEditingPublicUrl] = useState(false);
+  const [rememberCredentials, setRememberCredentials] = useState(savedInitial?.remember ?? true);
+  const [sidecarUrl, setSidecarUrl] = useState(
+    savedInitial?.sidecarUrl || (currentSidecarUrl && !currentSidecarUrl.includes('[your ip:port') ? currentSidecarUrl : defaultLocalSidecar)
+  );
+  const [useProxy, setUseProxy] = useState(savedInitial?.useProxy !== undefined ? savedInitial.useProxy : currentUseProxy);
+  const [authMode, setAuthMode] = useState<'token' | 'userpass'>(savedInitial?.authMode || 'token');
+
+  const [token, setToken] = useState(savedInitial?.token || '');
+  const [username, setUsername] = useState(savedInitial?.username || '');
   const [password, setPassword] = useState('');
 
   const [isConnecting, setIsConnecting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isOpen) return;
     const saved = getStoredCredentials();
     if (saved) {
       if (saved.serverUrl) setServerUrl(saved.serverUrl);
+      if (saved.sidecarUrl) setSidecarUrl(saved.sidecarUrl);
+      if (saved.useProxy !== undefined) setUseProxy(saved.useProxy);
       if (saved.authMode) setAuthMode(saved.authMode);
       if (saved.token) setToken(saved.token);
       if (saved.username) setUsername(saved.username);
@@ -83,14 +90,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     } else {
       const initial = currentServerUrl || defaultServerUrl || 'http://localhost:13378';
       setServerUrl(initial);
+      if (!currentSidecarUrl || currentSidecarUrl.includes('[your ip:port')) {
+        setSidecarUrl(defaultLocalSidecar);
+      } else {
+        setSidecarUrl(currentSidecarUrl);
+      }
+      setUseProxy(currentUseProxy);
     }
-
-    if (!currentSidecarUrl || currentSidecarUrl.includes('[your ip:port')) {
-      setSidecarUrl(defaultLocalSidecar);
-    } else {
-      setSidecarUrl(currentSidecarUrl);
-    }
-    setUseProxy(currentUseProxy);
     setErrorMsg(null);
   }, [isOpen, currentServerUrl, defaultServerUrl, currentSidecarUrl, currentUseProxy, defaultLocalSidecar]);
 

@@ -6,7 +6,7 @@ import { AuthModal } from './components/AuthModal';
 import { AbsUser, AbsActiveSession, Snippet } from './types';
 import { wipeSessionKey } from './lib/crypto';
 import { authenticateAbs, fetchActiveSession, formatAuthors } from './lib/absClient';
-import { getStoredCredentials, clearStoredCredentials } from './lib/authStorage';
+import { getStoredCredentials, saveStoredCredentials, clearStoredCredentials } from './lib/authStorage';
 import { CheckCircle2, X, Bell } from 'lucide-react';
 
 // Helper to determine initial default sidecar URL
@@ -46,19 +46,24 @@ export function App() {
   const [activeView, setActiveView] = useState<'capture' | 'library'>('capture');
   
   // Connection and Authentication State
+  const savedInitial = typeof window !== 'undefined' ? getStoredCredentials() : null;
   const [user, setUser] = useState<AbsUser | null>(null);
   const [activeToken, setActiveToken] = useState<string | null>(null);
-  const [serverUrl, setServerUrl] = useState<string>('http://localhost:13378');
-  const [sidecarUrl, setSidecarUrl] = useState<string>(getDefaultSidecarUrl());
-  const [useProxy, setUseProxy] = useState<boolean>(true);
+  const [serverUrl, setServerUrl] = useState<string>(savedInitial?.serverUrl || 'http://localhost:13378');
+  const [sidecarUrl, setSidecarUrl] = useState<string>(savedInitial?.sidecarUrl || getDefaultSidecarUrl());
+  const [useProxy, setUseProxy] = useState<boolean>(savedInitial?.useProxy !== undefined ? savedInitial.useProxy : true);
 
   // Active Listening Session
   const [session, setSession] = useState<AbsActiveSession | null>(null);
   const [isLoadingSession, setIsLoadingSession] = useState<boolean>(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
-  // Auth modal control
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(true);
+  // Auth modal control: If credentials were saved previously, keep modal closed while auto-connecting
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const saved = getStoredCredentials();
+    return !(saved && (saved.token || (saved.username && saved.password)));
+  });
 
   // Snippets library state
   const [snippets, setSnippets] = useState<Snippet[]>([]);
@@ -177,6 +182,7 @@ export function App() {
     username?: string;
     password?: string;
     isMock?: boolean;
+    remember?: boolean;
   }) => {
     setServerUrl(params.serverUrl);
     setSidecarUrl(params.sidecarUrl);
@@ -213,20 +219,37 @@ export function App() {
     setActiveToken(authResult.token);
     setIsAuthModalOpen(false);
 
+    // Save or clear credentials based on the user's "remember" choice
+    if (params.remember) {
+      saveStoredCredentials({
+        serverUrl: params.serverUrl,
+        sidecarUrl: params.sidecarUrl,
+        useProxy: params.useProxy,
+        authMode: params.authMode,
+        token: params.authMode === 'token' ? (params.token || authResult.token) : authResult.token,
+        username: params.username || authResult.user.username,
+        remember: true,
+      });
+    } else {
+      clearStoredCredentials();
+    }
+
     loadActiveSession(params.serverUrl, authResult.token, params.useProxy);
     syncUserBookmarks(params.sidecarUrl, authResult.token, authResult.user.username, params.useProxy);
   };
 
   // On App Mount: Auto-login from persistent saved credentials if available
   useEffect(() => {
-    // 1. Fetch system config first
-    fetch('/api/config')
-      .then((res) => res.json())
-      .then(async (cfg) => {
-        let initialServer = 'http://localhost:13378';
-        let initialSidecar = getDefaultSidecarUrl();
-        let initialProxy = true;
+    let isCancelled = false;
 
+    const initializeConnection = async () => {
+      let initialServer = 'http://localhost:13378';
+      let initialSidecar = getDefaultSidecarUrl();
+      let initialProxy = true;
+
+      try {
+        const res = await fetch('/api/config');
+        const cfg = await res.json();
         if (cfg?.ok) {
           if (cfg.defaultAbsUrl) {
             initialServer = cfg.defaultAbsUrl;
@@ -239,48 +262,64 @@ export function App() {
           if (cfg.useBackendProxy !== undefined) {
             initialProxy = Boolean(cfg.useBackendProxy);
           }
+        }
+      } catch (err) {
+        console.warn('Could not load /api/config, falling back to defaults:', err);
+      }
+
+      if (isCancelled) return;
+
+      // 2. Check if user previously saved credentials on this device
+      const saved = getStoredCredentials();
+      if (saved && (saved.token || (saved.username && saved.password))) {
+        try {
+          const targetServerToUse = saved.serverUrl || initialServer;
+          const targetSidecarToUse = saved.sidecarUrl || initialSidecar;
+          const proxyToUse = saved.useProxy !== undefined ? saved.useProxy : initialProxy;
+          const authModeToUse = saved.token ? 'token' : saved.authMode;
+
+          setServerUrl(targetServerToUse);
+          setSidecarUrl(targetSidecarToUse);
+          setUseProxy(proxyToUse);
+
+          const authResult = await authenticateAbs(
+            targetServerToUse,
+            authModeToUse,
+            saved.token,
+            saved.username,
+            saved.password,
+            proxyToUse
+          );
+
+          if (isCancelled) return;
+
+          setUser(authResult.user);
+          setActiveToken(authResult.token);
+          setIsAuthModalOpen(false);
+
+          loadActiveSession(targetServerToUse, authResult.token, proxyToUse);
+          syncUserBookmarks(targetSidecarToUse, authResult.token, authResult.user.username, proxyToUse);
+        } catch (autoErr) {
+          console.warn('Auto-reconnect with saved credentials notice:', autoErr);
+          if (!isCancelled) {
+            setIsAuthModalOpen(true);
+          }
+        }
+      } else {
+        if (!isCancelled) {
           setServerUrl(initialServer);
           setSidecarUrl(initialSidecar);
           setUseProxy(initialProxy);
-        }
-
-        // 2. Check if user previously saved credentials on this device
-        const saved = getStoredCredentials();
-        if (saved && (saved.token || (saved.username && saved.password))) {
-          try {
-            const targetServerToUse = saved.serverUrl || initialServer;
-            const targetSidecarToUse = saved.sidecarUrl || initialSidecar;
-            const proxyToUse = saved.useProxy !== undefined ? saved.useProxy : initialProxy;
-
-            const authResult = await authenticateAbs(
-              targetServerToUse,
-              saved.authMode,
-              saved.token,
-              saved.username,
-              saved.password,
-              proxyToUse
-            );
-
-            setUser(authResult.user);
-            setActiveToken(authResult.token);
-            setServerUrl(targetServerToUse);
-            setSidecarUrl(targetSidecarToUse);
-            setUseProxy(proxyToUse);
-            setIsAuthModalOpen(false);
-
-            loadActiveSession(targetServerToUse, authResult.token, proxyToUse);
-            syncUserBookmarks(targetSidecarToUse, authResult.token, authResult.user.username, proxyToUse);
-          } catch (autoErr) {
-            console.warn('Auto-reconnect with saved credentials notice:', autoErr);
-            setIsAuthModalOpen(true);
-          }
-        } else {
           setIsAuthModalOpen(true);
         }
-      })
-      .catch(() => {
-        setIsAuthModalOpen(true);
-      });
+      }
+    };
+
+    initializeConnection();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [loadActiveSession, syncUserBookmarks]);
 
   // Automated Real-Time Background Polling:

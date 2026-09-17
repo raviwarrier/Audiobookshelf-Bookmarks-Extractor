@@ -83,7 +83,7 @@ export function getStoredCredentials(): StoredCredentials | null {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && parsed.serverUrl) {
+    if (parsed && typeof parsed === 'object' && (parsed.serverUrl || parsed.token)) {
       return parsed as StoredCredentials;
     }
   } catch (err) {
