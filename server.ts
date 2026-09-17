@@ -1,9 +1,148 @@
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";
+import http from "node:http";
+import https from "node:https";
+import zlib from "node:zlib";
+import type { IncomingHttpHeaders } from "node:http";
 import { createServer as createViteServer } from "vite";
 
 dotenv.config();
+
+/**
+ * Resilient HTTP/HTTPS client that handles compression, stream decoding,
+ * redirects, and chunked encoding without strict Undici Content-Length mismatches.
+ */
+function resilientProxyRequest(
+  urlStr: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    timeoutMs?: number;
+  } = {},
+  redirectCount = 0
+): Promise<{
+  ok: boolean;
+  status: number;
+  statusText: string;
+  data: any;
+  headers: IncomingHttpHeaders;
+}> {
+  return new Promise((resolve, reject) => {
+    if (redirectCount > 5) {
+      return reject(new Error("Too many redirects (maximum 5 redirects allowed)"));
+    }
+
+    const parsed = new URL(urlStr);
+    const transport = parsed.protocol === "https:" ? https : http;
+    const reqHeaders: Record<string, string> = { ...options.headers };
+
+    // Request uncompressed identity stream by default to eliminate Content-Length / compression mismatches,
+    // while still decoding gzip/deflate/br if an upstream proxy forces it.
+    if (!reqHeaders["Accept-Encoding"] && !reqHeaders["accept-encoding"]) {
+      reqHeaders["Accept-Encoding"] = "identity";
+    }
+
+    if (options.body && !reqHeaders["Content-Length"] && !reqHeaders["content-length"]) {
+      reqHeaders["Content-Length"] = String(Buffer.byteLength(options.body, "utf-8"));
+    } else if (
+      !options.body &&
+      ["POST", "PUT", "PATCH"].includes((options.method || "GET").toUpperCase()) &&
+      !reqHeaders["Content-Length"] &&
+      !reqHeaders["content-length"]
+    ) {
+      reqHeaders["Content-Length"] = "0";
+    }
+
+    const req = transport.request(
+      parsed,
+      {
+        method: options.method || "GET",
+        headers: reqHeaders,
+        timeout: options.timeoutMs || 300000,
+      },
+      (res) => {
+        // Handle HTTP redirects (301, 302, 303, 307, 308)
+        if (
+          res.statusCode &&
+          [301, 302, 303, 307, 308].includes(res.statusCode) &&
+          res.headers.location
+        ) {
+          const nextUrl = new URL(res.headers.location, parsed).toString();
+          const nextMethod =
+            res.statusCode === 303 ||
+            ((res.statusCode === 301 || res.statusCode === 302) &&
+              options.method === "POST")
+              ? "GET"
+              : options.method;
+          return resolve(
+            resilientProxyRequest(
+              nextUrl,
+              { ...options, method: nextMethod },
+              redirectCount + 1
+            )
+          );
+        }
+
+        let stream: NodeJS.ReadableStream = res;
+        const contentEncoding = (res.headers["content-encoding"] || "").toLowerCase();
+
+        if (contentEncoding === "gzip") {
+          stream = res.pipe(zlib.createGunzip());
+        } else if (contentEncoding === "deflate") {
+          stream = res.pipe(zlib.createInflate());
+        } else if (contentEncoding === "br") {
+          stream = res.pipe(zlib.createBrotliDecompress());
+        }
+
+        const chunks: Buffer[] = [];
+        stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+
+        const finish = () => {
+          const buf = Buffer.concat(chunks);
+          const rawText = buf.toString("utf-8");
+          const contentType = (res.headers["content-type"] || "").toLowerCase();
+          let parsedData: any = rawText;
+
+          if (contentType.includes("application/json")) {
+            try {
+              parsedData = JSON.parse(rawText);
+            } catch {
+              parsedData = rawText;
+            }
+          }
+
+          resolve({
+            ok: Boolean(res.statusCode && res.statusCode >= 200 && res.statusCode < 300),
+            status: res.statusCode || 200,
+            statusText: res.statusMessage || "OK",
+            headers: res.headers,
+            data: parsedData,
+          });
+        };
+
+        stream.on("end", finish);
+        stream.on("error", () => {
+          finish();
+        });
+      }
+    );
+
+    req.on("timeout", () => {
+      req.destroy(new Error(`Request timed out after ${Math.round((options.timeoutMs || 300000) / 1000)} seconds`));
+    });
+
+    req.on("error", (err) => {
+      reject(err);
+    });
+
+    if (options.body) {
+      req.write(options.body);
+    }
+    req.end();
+  });
+}
 
 async function startServer() {
   const app = express();
@@ -21,8 +160,6 @@ async function startServer() {
   // API Proxy Route for Audiobookshelf:
   // Completely bypasses browser CORS restrictions by fetching server-to-server.
   app.post("/api/proxy/abs", async (req, res) => {
-    let controller: AbortController | null = null;
-    let timeoutId: NodeJS.Timeout | null = null;
     // Allow up to 300 seconds (5 minutes) for heavy operations such as faster-whisper
     // model downloading, CPU speech-to-text inference on long audio clips, or cold starts.
     const PROXY_TIMEOUT_MS = Number(process.env.PROXY_TIMEOUT_MS) || 300000;
@@ -58,51 +195,33 @@ async function startServer() {
       safeHeaders["User-Agent"] = safeHeaders["User-Agent"] || "Audiobookshelf-Bookmarks-Extractor/1.0";
       safeHeaders["Accept"] = safeHeaders["Accept"] || "*/*";
 
-      controller = new AbortController();
-      timeoutId = setTimeout(() => controller?.abort(), PROXY_TIMEOUT_MS);
-
-      const fetchOptions: RequestInit = {
-        method,
-        headers: safeHeaders,
-        signal: controller.signal,
-      };
-
-      if (body && ["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) {
-        fetchOptions.body = typeof body === "string" ? body : JSON.stringify(body);
+      let requestBody: string | undefined = undefined;
+      if (body !== undefined && body !== null && ["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) {
+        requestBody = typeof body === "string" ? body : JSON.stringify(body);
         if (!safeHeaders["Content-Type"]) {
           safeHeaders["Content-Type"] = "application/json";
         }
       }
 
-      const response = await fetch(cleanTargetUrl, fetchOptions);
-      if (timeoutId) clearTimeout(timeoutId);
-
-      const contentType = response.headers.get("content-type") || "";
-
-      let data;
-      if (contentType.includes("application/json")) {
-        data = await response.json();
-      } else {
-        data = await response.text();
-      }
+      const proxyResult = await resilientProxyRequest(cleanTargetUrl, {
+        method,
+        headers: safeHeaders,
+        body: requestBody,
+        timeoutMs: PROXY_TIMEOUT_MS,
+      });
 
       return res.status(200).json({
-        ok: response.ok,
-        status: response.status,
-        statusText: response.statusText,
-        data,
+        ok: proxyResult.ok,
+        status: proxyResult.status,
+        statusText: proxyResult.statusText,
+        data: proxyResult.data,
       });
     } catch (err: unknown) {
-      if (timeoutId) clearTimeout(timeoutId);
-
       const errObj = err as { name?: string; message?: string; cause?: { message?: string; code?: string } };
       const causeText = errObj?.cause?.message || errObj?.cause?.code || "";
-      const isTimeout = errObj?.name === "AbortError";
 
       let msg = errObj?.message || "Failed to reach remote server";
-      if (isTimeout) {
-        msg = `Request timed out after ${Math.round(PROXY_TIMEOUT_MS / 1000)} seconds`;
-      } else if (causeText) {
+      if (causeText) {
         msg = `${msg} (${causeText})`;
       }
 

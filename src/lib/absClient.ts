@@ -117,6 +117,30 @@ async function absFetch(
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Backend proxy request failed';
+
+      // Resilient fallback: If the backend proxy fails, attempt direct browser fetch
+      // in case the target server allows CORS natively (e.g. Cloudflare / reverse proxy).
+      if (!isTargetLocal) {
+        try {
+          const directRes = await fetch(targetUrl, {
+            method: options.method || 'GET',
+            headers: options.headers,
+            body: options.body ? JSON.stringify(options.body) : undefined,
+          });
+
+          const isJson = directRes.headers.get('content-type')?.includes('application/json');
+          const data = isJson ? await directRes.json() : await directRes.text();
+
+          return {
+            ok: directRes.ok,
+            status: directRes.status,
+            data,
+          };
+        } catch {
+          // Fallback also failed; throw original proxy error
+        }
+      }
+
       throw new Error(`Proxy error contacting ${targetUrl}: ${msg}`);
     }
   }
