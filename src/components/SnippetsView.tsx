@@ -17,7 +17,11 @@ import {
   RotateCw,
   X,
   BookOpen,
-  ChevronDown
+  ChevronDown,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  Calendar
 } from 'lucide-react';
 import { Snippet, AbsUser, SyncState } from '../types';
 
@@ -70,6 +74,10 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
   const [selectedBookFilter, setSelectedBookFilter] = useState<string | null>(null);
   const [openExportDropdownId, setOpenExportDropdownId] = useState<string | null>(null);
 
+  // Sorting state (by Date or Book, Ascending / Descending)
+  const [sortField, setSortField] = useState<'date' | 'book'>('date');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+
   useEffect(() => {
     if (!openExportDropdownId) return;
     const handleGlobalClick = () => setOpenExportDropdownId(null);
@@ -88,6 +96,40 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
       s.transcript.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesBook = !selectedBookFilter || s.bookTitle === selectedBookFilter;
     return matchesSearch && matchesBook;
+  });
+
+  const getSnippetTime = (s: Snippet): number => {
+    if (typeof s.createdAt === 'number' && !isNaN(s.createdAt) && s.createdAt > 0) {
+      return s.createdAt;
+    }
+    if (s.timestamp) {
+      const match = s.timestamp.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
+      if (match) {
+        const d = new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}`);
+        if (!isNaN(d.getTime())) return d.getTime();
+      }
+      const d = new Date(s.timestamp);
+      if (!isNaN(d.getTime())) return d.getTime();
+    }
+    return 0;
+  };
+
+  const sortedSnippets = [...filteredSnippets].sort((a, b) => {
+    if (sortField === 'date') {
+      const timeA = getSnippetTime(a);
+      const timeB = getSnippetTime(b);
+      if (timeA !== timeB) {
+        return sortDirection === 'desc' ? timeB - timeA : timeA - timeB;
+      }
+      return a.bookTitle.localeCompare(b.bookTitle);
+    } else {
+      // Sort by book title
+      const cmp = a.bookTitle.localeCompare(b.bookTitle, undefined, { sensitivity: 'base' });
+      if (cmp !== 0) {
+        return sortDirection === 'asc' ? cmp : -cmp;
+      }
+      return getSnippetTime(b) - getSnippetTime(a);
+    }
   });
 
   const handleCopyTranscript = (id: string, text: string) => {
@@ -329,6 +371,90 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
         </div>
       )}
 
+      {/* Sorting & Filter Controls Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-neutral-800 pb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-neutral-400 font-mono flex items-center gap-1.5 mr-1">
+            <ArrowUpDown className="w-3.5 h-3.5 text-neutral-400" />
+            <span>Sort:</span>
+          </span>
+
+          <div className="inline-flex border border-neutral-700 bg-[#121212]">
+            <button
+              onClick={() => {
+                if (sortField === 'date') {
+                  setSortDirection((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+                } else {
+                  setSortField('date');
+                  setSortDirection('desc');
+                }
+              }}
+              className={`px-3 py-1 text-xs font-mono flex items-center gap-1.5 transition-colors ${
+                sortField === 'date'
+                  ? 'bg-neutral-200 text-black font-semibold'
+                  : 'text-neutral-300 hover:text-white hover:bg-[#1a1a1a]'
+              }`}
+              title="Sort by Date (click to toggle ascending/descending)"
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              <span>Date</span>
+              {sortField === 'date' && (
+                <span className="text-[10px] ml-0.5 opacity-75">
+                  ({sortDirection === 'desc' ? 'Newest' : 'Oldest'})
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => {
+                if (sortField === 'book') {
+                  setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+                } else {
+                  setSortField('book');
+                  setSortDirection('asc');
+                }
+              }}
+              className={`px-3 py-1 text-xs font-mono flex items-center gap-1.5 transition-colors border-l border-neutral-700 ${
+                sortField === 'book'
+                  ? 'bg-neutral-200 text-black font-semibold'
+                  : 'text-neutral-300 hover:text-white hover:bg-[#1a1a1a]'
+              }`}
+              title="Sort by Book Title (click to toggle A-Z / Z-A)"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>Book</span>
+              {sortField === 'book' && (
+                <span className="text-[10px] ml-0.5 opacity-75">
+                  ({sortDirection === 'asc' ? 'A→Z' : 'Z→A'})
+                </span>
+              )}
+            </button>
+          </div>
+
+          <button
+            onClick={() => setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+            className="px-2.5 py-1 text-xs font-mono border border-neutral-700 bg-[#141414] hover:border-neutral-500 text-neutral-300 hover:text-white transition-colors flex items-center gap-1.5"
+            title={`Current order: ${sortDirection === 'asc' ? 'Ascending' : 'Descending'}. Click to reverse.`}
+          >
+            {sortDirection === 'asc' ? (
+              <>
+                <ArrowUp className="w-3.5 h-3.5 text-neutral-200" />
+                <span>Ascending</span>
+              </>
+            ) : (
+              <>
+                <ArrowDown className="w-3.5 h-3.5 text-neutral-200" />
+                <span>Descending</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        <div className="text-xs text-neutral-400 font-mono">
+          Showing {sortedSnippets.length} {sortedSnippets.length === 1 ? 'snippet' : 'snippets'}
+        </div>
+      </div>
+
       {/* Book Filter Chips (When multiple books exist) */}
       {uniqueBooks.length > 1 && (
         <div className="flex flex-wrap items-center gap-2 pt-1 pb-1">
@@ -364,7 +490,7 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
       )}
 
       {/* Snippet List */}
-      {filteredSnippets.length === 0 ? (
+      {sortedSnippets.length === 0 ? (
         <div className="border border-neutral-700 bg-[#0d0d0d] p-12 text-center space-y-4">
           <div className="text-neutral-400 text-sm font-mono">
             {searchTerm || selectedBookFilter ? 'No matching snippets found.' : 'No snippets captured yet.'}
@@ -378,197 +504,245 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
         </div>
       ) : (
         <div className="space-y-4">
-          {filteredSnippets.map((snippet) => (
-            <article
-              key={snippet.id}
-              className="border border-neutral-700 bg-[#0d0d0d] p-5 space-y-4"
-            >
-              {/* Snippet Header */}
-              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-neutral-800 pb-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-white">
-                    {snippet.bookTitle}
-                  </h3>
-                  <div className="text-xs text-neutral-400 mt-0.5 flex flex-wrap items-center gap-2">
-                    <span>{snippet.author}</span>
-                    <span>•</span>
-                    <span>{snippet.chapterName}</span>
-                    <span className="text-[10px] text-neutral-400 bg-neutral-800 px-1.5 py-0.5 border border-neutral-700">
-                      @{snippet.username || user?.username || 'user'}
-                    </span>
-                    <span className="text-[10px] text-neutral-500 hidden sm:inline">
-                      {snippet.username || user?.username || 'user'}/bookmarks/
-                    </span>
-                  </div>
-                </div>
+          {sortedSnippets.map((snippet) => {
+            const isAudioAvailable = Boolean(snippet.audioUrl && snippet.duration > 0 && snippet.extractionStatus !== 'unavailable');
 
-                <div className="flex items-center gap-3 text-xs text-neutral-400 font-mono self-end sm:self-auto">
-                  <span>Start: {Math.round(snippet.startTime)}s</span>
-                  <span>Duration: {snippet.duration}s</span>
-                  <span>{new Date(snippet.createdAt).toLocaleDateString()}</span>
-                </div>
-              </div>
-
-              {/* Audio Player - remounts cleanly on duration or audioUrl change to purge stale audio buffer */}
-              <div className="bg-[#141414] p-2.5 border border-neutral-700">
-                <audio
-                  key={`${snippet.id}-${snippet.duration}-${snippet.audioUrl}`}
-                  controls
-                  preload="metadata"
-                  src={snippet.audioUrl}
-                  className="w-full h-8 bg-[#181818]"
-                />
-              </div>
-
-              {/* Transcript Text Box */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-xs text-neutral-400">
-                  <span className="font-mono text-[11px] uppercase">Whisper Transcript</span>
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => handleCopyCitation(snippet)}
-                      title="Copy formatted quote citation with book title, author, and timestamp"
-                      className="flex items-center gap-1 text-neutral-400 hover:text-white transition-colors text-[11px]"
-                    >
-                      {copiedCitationId === snippet.id ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span className="text-emerald-400">Citation Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Cite / Quote</span>
-                        </>
+            return (
+              <article
+                key={snippet.id}
+                className="border border-neutral-700 bg-[#0d0d0d] p-5 space-y-4"
+              >
+                {/* Snippet Header */}
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 border-b border-neutral-800 pb-3">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-sm font-semibold text-white">
+                        {snippet.bookTitle || 'Unknown Book'}
+                      </h3>
+                      {!isAudioAvailable && (
+                        <span className="text-[10px] text-amber-300 bg-amber-950/80 px-2 py-0.5 border border-amber-800/80 font-mono flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3 text-amber-400" />
+                          <span>Audio Unavailable</span>
+                        </span>
                       )}
-                    </button>
-                    <button
-                      onClick={() => handleCopyTranscript(snippet.id, snippet.transcript)}
-                      className="flex items-center gap-1 text-neutral-300 hover:text-white transition-colors"
-                    >
-                      {copiedId === snippet.id ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-white" />
-                          <span>Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Copy Text</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="p-3 bg-[#151515] border border-neutral-700 text-xs text-neutral-200 leading-relaxed font-mono whitespace-pre-wrap">
-                  {snippet.transcript}
-                </div>
-              </div>
-
-              {/* Action Toolbar */}
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-neutral-800 text-xs">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={() => handleDownloadAudio(snippet)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-700 bg-[#161616] hover:border-neutral-500 text-neutral-200 hover:text-white transition-colors"
-                  >
-                    <FileAudio className="w-3.5 h-3.5" />
-                    <span>Download .MP3</span>
-                  </button>
-
-                  <button
-                    onClick={() => handleDownloadMarkdown(snippet)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-700 bg-[#161616] hover:border-neutral-500 text-neutral-200 hover:text-white transition-colors"
-                  >
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>Download .MD</span>
-                  </button>
-
-                  {/* Expand / Adjust Snippet Context Button */}
-                  <button
-                    onClick={() => openExpandModal(snippet)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-700 bg-[#1a1a1a] hover:border-neutral-400 text-neutral-100 hover:text-white transition-colors"
-                    title="Adjust pre-roll & post-roll to expand snippet context"
-                  >
-                    <Sliders className="w-3.5 h-3.5 text-neutral-300" />
-                    <span>Adjust Duration / Context</span>
-                  </button>
-
-                  {/* Export all from this book Dropdown */}
-                  <div className="relative">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setOpenExportDropdownId(openExportDropdownId === snippet.id ? null : snippet.id);
-                      }}
-                      disabled={exportingBook === snippet.bookTitle}
-                      className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-700 bg-[#161616] hover:border-neutral-400 text-neutral-200 hover:text-white transition-colors disabled:opacity-50"
-                      title="Export all snippets from this book"
-                    >
-                      <Archive className="w-3.5 h-3.5 text-neutral-300" />
-                      <span>
-                        {exportingBook === snippet.bookTitle ? 'Exporting Book...' : 'Export all from this book'}
+                    </div>
+                    <div className="text-xs text-neutral-400 mt-0.5 flex flex-wrap items-center gap-2">
+                      <span>{snippet.author || 'N/A'}</span>
+                      <span>•</span>
+                      <span>{snippet.chapterName || 'N/A'}</span>
+                      <span className="text-[10px] text-neutral-400 bg-neutral-800 px-1.5 py-0.5 border border-neutral-700">
+                        @{snippet.username || user?.username || 'user'}
                       </span>
-                      <ChevronDown
-                        className={`w-3 h-3 text-neutral-400 transition-transform ${
-                          openExportDropdownId === snippet.id ? 'rotate-180' : ''
-                        }`}
-                      />
-                    </button>
+                      <span className="text-[10px] text-neutral-500 hidden sm:inline font-mono">
+                        {snippet.username || user?.username || 'user'}/bookmarks/
+                      </span>
+                    </div>
+                  </div>
 
-                    {openExportDropdownId === snippet.id && (
-                      <div
-                        className="absolute left-0 mt-1 w-52 bg-[#181818] border border-neutral-700 shadow-xl z-20 font-mono py-1"
-                        onClick={(e) => e.stopPropagation()}
+                  <div className="flex items-center gap-3 text-xs text-neutral-400 font-mono self-end sm:self-auto">
+                    <span>Start: {isAudioAvailable ? `${Math.round(snippet.startTime)}s` : (snippet.startTime > 0 ? `${Math.round(snippet.startTime)}s` : 'N/A')}</span>
+                    <span>Duration: {isAudioAvailable ? `${snippet.duration}s` : 'N/A'}</span>
+                    <span>{new Date(snippet.createdAt).toLocaleDateString()}</span>
+                  </div>
+                </div>
+
+                {/* Audio Player or Unavailable Banner */}
+                {isAudioAvailable ? (
+                  <div className="bg-[#141414] p-2.5 border border-neutral-700">
+                    <audio
+                      key={`${snippet.id}-${snippet.duration}-${snippet.audioUrl}`}
+                      controls
+                      preload="metadata"
+                      src={snippet.audioUrl}
+                      className="w-full h-8 bg-[#181818]"
+                    />
+                  </div>
+                ) : (
+                  <div className="bg-[#141414] p-3 border border-amber-900/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-start sm:items-center gap-2 text-xs text-amber-300 font-mono">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+                      <span>This bookmark was found in the library, but could not be extracted and transcribed (source file moved, deleted, or unmounted).</span>
+                    </div>
+                    <span className="text-[10px] uppercase font-mono px-2 py-0.5 bg-neutral-900 text-amber-400/90 border border-amber-800/60 shrink-0 self-start sm:self-auto">
+                      Audio N/A
+                    </span>
+                  </div>
+                )}
+
+                {/* Transcript Text Box */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs text-neutral-400">
+                    <span className="font-mono text-[11px] uppercase">
+                      {isAudioAvailable ? 'Whisper Transcript' : 'Bookmark Details & Status'}
+                    </span>
+                    <div className="flex items-center gap-3">
+                      {isAudioAvailable && (
+                        <button
+                          onClick={() => handleCopyCitation(snippet)}
+                          title="Copy formatted quote citation with book title, author, and timestamp"
+                          className="flex items-center gap-1 text-neutral-400 hover:text-white transition-colors text-[11px]"
+                        >
+                          {copiedCitationId === snippet.id ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span className="text-emerald-400">Citation Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>Cite / Quote</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleCopyTranscript(snippet.id, snippet.transcript)}
+                        className="flex items-center gap-1 text-neutral-300 hover:text-white transition-colors"
                       >
-                        <div className="px-3 py-1.5 text-[10px] text-neutral-400 border-b border-neutral-800 uppercase tracking-wider truncate">
-                          {snippet.bookTitle}
-                        </div>
-                        <button
-                          onClick={() => {
-                            setOpenExportDropdownId(null);
-                            handleExportBook(snippet.bookTitle, 'zip');
-                          }}
-                          className="w-full text-left px-3 py-2 text-xs text-neutral-200 hover:text-white hover:bg-[#222222] flex items-center justify-between transition-colors"
-                        >
-                          <span className="flex items-center gap-2">
-                            <Archive className="w-3.5 h-3.5 text-neutral-400" />
-                            <span>As Zip</span>
-                          </span>
-                          <span className="text-[10px] text-neutral-500 font-mono">.zip</span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            setOpenExportDropdownId(null);
-                            handleExportBook(snippet.bookTitle, 'markdown');
-                          }}
-                          className="w-full text-left px-3 py-2 text-xs text-neutral-200 hover:text-white hover:bg-[#222222] flex items-center justify-between transition-colors border-t border-neutral-800/60"
-                        >
-                          <span className="flex items-center gap-2">
-                            <FileText className="w-3.5 h-3.5 text-neutral-400" />
-                            <span>As .MD</span>
-                          </span>
-                          <span className="text-[10px] text-neutral-500 font-mono">.md</span>
-                        </button>
+                        {copiedId === snippet.id ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-white" />
+                            <span>Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Copy Text</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-[#151515] border border-neutral-700 text-xs text-neutral-200 leading-relaxed font-mono whitespace-pre-wrap">
+                    {snippet.transcript || 'No text or transcript available.'}
+                  </div>
+                </div>
+
+                {/* Action Toolbar */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-neutral-800 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {isAudioAvailable ? (
+                      <button
+                        onClick={() => handleDownloadAudio(snippet)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-700 bg-[#161616] hover:border-neutral-500 text-neutral-200 hover:text-white transition-colors"
+                      >
+                        <FileAudio className="w-3.5 h-3.5" />
+                        <span>Download .MP3</span>
+                      </button>
+                    ) : (
+                      <div
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-800 bg-[#141414] text-neutral-500 cursor-not-allowed opacity-50 font-mono"
+                        title="MP3 is not available for unextracted bookmark"
+                      >
+                        <FileAudio className="w-3.5 h-3.5" />
+                        <span>No .MP3 (N/A)</span>
                       </div>
                     )}
+
+                    <button
+                      onClick={() => handleDownloadMarkdown(snippet)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-700 bg-[#161616] hover:border-neutral-500 text-neutral-200 hover:text-white transition-colors"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Download .MD</span>
+                    </button>
+
+                    {/* Expand / Adjust Snippet Context Button */}
+                    {isAudioAvailable ? (
+                      <button
+                        onClick={() => openExpandModal(snippet)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-700 bg-[#1a1a1a] hover:border-neutral-400 text-neutral-100 hover:text-white transition-colors"
+                        title="Adjust pre-roll & post-roll to expand snippet context"
+                      >
+                        <Sliders className="w-3.5 h-3.5 text-neutral-300" />
+                        <span>Adjust Duration / Context</span>
+                      </button>
+                    ) : (
+                      <div
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-800 bg-[#141414] text-neutral-500 cursor-not-allowed opacity-50 font-mono"
+                        title="Cannot adjust duration: audio source is not accessible"
+                      >
+                        <Sliders className="w-3.5 h-3.5 text-neutral-600" />
+                        <span>Adjust (N/A)</span>
+                      </div>
+                    )}
+
+                    {/* Export all from this book Dropdown */}
+                    <div className="relative">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenExportDropdownId(openExportDropdownId === snippet.id ? null : snippet.id);
+                        }}
+                        disabled={exportingBook === snippet.bookTitle}
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-neutral-700 bg-[#161616] hover:border-neutral-400 text-neutral-200 hover:text-white transition-colors disabled:opacity-50"
+                        title="Export all snippets from this book"
+                      >
+                        <Archive className="w-3.5 h-3.5 text-neutral-300" />
+                        <span>
+                          {exportingBook === snippet.bookTitle ? 'Exporting Book...' : 'Export all from this book'}
+                        </span>
+                        <ChevronDown
+                          className={`w-3 h-3 text-neutral-400 transition-transform ${
+                            openExportDropdownId === snippet.id ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </button>
+
+                      {openExportDropdownId === snippet.id && (
+                        <div
+                          className="absolute left-0 mt-1 w-52 bg-[#181818] border border-neutral-700 shadow-xl z-20 font-mono py-1"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="px-3 py-1.5 text-[10px] text-neutral-400 border-b border-neutral-800 uppercase tracking-wider truncate">
+                            {snippet.bookTitle}
+                          </div>
+                          <button
+                            onClick={() => {
+                              setOpenExportDropdownId(null);
+                              handleExportBook(snippet.bookTitle, 'zip');
+                            }}
+                            className="w-full text-left px-3 py-2 text-xs text-neutral-200 hover:text-white hover:bg-[#222222] flex items-center justify-between transition-colors"
+                          >
+                            <span className="flex items-center gap-2">
+                              <Archive className="w-3.5 h-3.5 text-neutral-400" />
+                              <span>As Zip</span>
+                            </span>
+                            <span className="text-[10px] text-neutral-500 font-mono">.zip</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setOpenExportDropdownId(null);
+                              handleExportBook(snippet.bookTitle, 'markdown');
+                            }}
+                            className="w-full text-left px-3 py-2 text-xs text-neutral-200 hover:text-white hover:bg-[#222222] flex items-center justify-between transition-colors border-t border-neutral-800/60"
+                          >
+                            <span className="flex items-center gap-2">
+                              <FileText className="w-3.5 h-3.5 text-neutral-400" />
+                              <span>As .MD</span>
+                            </span>
+                            <span className="text-[10px] text-neutral-500 font-mono">.md</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => onDeleteSnippet(snippet.id)}
+                      className="text-neutral-400 hover:text-red-400 flex items-center gap-1 transition-colors"
+                      title="Delete snippet"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete</span>
+                    </button>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => onDeleteSnippet(snippet.id)}
-                    className="text-neutral-400 hover:text-red-400 flex items-center gap-1 transition-colors"
-                    title="Delete snippet"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Delete</span>
-                  </button>
-                </div>
-              </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       )}
 

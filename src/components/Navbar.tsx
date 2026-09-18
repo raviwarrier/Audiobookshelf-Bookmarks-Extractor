@@ -36,10 +36,13 @@ export const Navbar: React.FC<NavbarProps> = ({
               className="w-full h-full object-contain block dark:hidden"
             />
           </div>
-          <div>
+          <div className="flex items-center gap-2">
             <h1 className="text-sm md:text-base font-semibold tracking-tight text-white">
               Audiobookshelf Bookmarks Extractor
             </h1>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 bg-neutral-800 text-neutral-400 border border-neutral-700">
+              v1.5.1
+            </span>
           </div>
         </div>
 

@@ -126,22 +126,45 @@ export function App() {
       }
 
       if (bookmarksList.length > 0) {
-        const sidecarBookmarks: Snippet[] = bookmarksList.map((b: any) => ({
-          id: b.id || `b-${b.timestamp}`,
-          bookTitle: b.book_title,
-          author: formatAuthors(b.author, b.authors, b.authorName),
-          chapterName: b.chapter,
-          timestamp: b.timestamp,
-          startTime: b.start_time,
-          currentTime: b.current_time,
-          libraryItemId: b.library_item_id,
-          duration: b.duration,
-          audioUrl: getPlayableAudioUrl(b.audio_url, targetSidecar, proxyEnabled),
-          transcript: b.transcript,
-          markdownContent: `# ${b.book_title}\n\n${b.transcript}`,
-          createdAt: b.created_at ? new Date(b.created_at).getTime() : Date.now(),
-          username: b.username || username
-        }));
+        const sidecarBookmarks: Snippet[] = bookmarksList.map((b: any) => {
+          let parsedDate = Date.now();
+          if (b.created_at) {
+            const t = new Date(b.created_at).getTime();
+            if (!isNaN(t)) {
+              parsedDate = t;
+            } else {
+              const m = String(b.created_at).match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
+              if (m) {
+                const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
+                if (!isNaN(d.getTime())) parsedDate = d.getTime();
+              }
+            }
+          } else if (b.timestamp) {
+            const m = String(b.timestamp).match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
+            if (m) {
+              const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
+              if (!isNaN(d.getTime())) parsedDate = d.getTime();
+            }
+          }
+
+          return {
+            id: b.id || `b-${b.timestamp}`,
+            bookTitle: b.book_title || 'Unknown Book',
+            author: formatAuthors(b.author, b.authors, b.authorName),
+            chapterName: b.chapter || 'N/A',
+            timestamp: b.timestamp,
+            startTime: b.start_time ?? 0,
+            currentTime: b.current_time ?? 0,
+            libraryItemId: b.library_item_id,
+            duration: b.duration ?? 0,
+            audioUrl: b.audio_url ? getPlayableAudioUrl(b.audio_url, targetSidecar, proxyEnabled) : '',
+            transcript: b.transcript || '',
+            markdownContent: `# ${b.book_title || 'Bookmark'}\n\n${b.transcript || ''}`,
+            createdAt: parsedDate,
+            username: b.username || username,
+            extractionStatus: b.extraction_status || (b.audio_url ? 'success' : 'unavailable')
+          };
+        });
         setSnippets(sidecarBookmarks);
 
         // Update latest known timestamp
@@ -609,8 +632,10 @@ export function App() {
       />
 
       {/* Minimal Footer */}
-      <footer className="border-t border-neutral-900 px-6 py-4 text-center text-xs text-neutral-600 font-mono">
-        Audiobookshelf Bookmarks Extractor
+      <footer className="border-t border-neutral-900 px-6 py-4 text-center text-xs text-neutral-600 font-mono flex items-center justify-center gap-2">
+        <span>Audiobookshelf Bookmarks Extractor</span>
+        <span>•</span>
+        <span className="text-neutral-500">v1.5.1</span>
       </footer>
     </div>
   );

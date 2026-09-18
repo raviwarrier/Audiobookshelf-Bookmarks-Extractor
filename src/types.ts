@@ -56,6 +56,7 @@ export interface Snippet {
   userId?: string;
   username?: string;
   libraryItemId?: string;
+  extractionStatus?: 'success' | 'unavailable' | string;
 }
 
 export interface StoredCredentials {

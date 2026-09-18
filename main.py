@@ -14,6 +14,7 @@ import asyncio
 import threading
 import subprocess
 import logging
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -288,8 +289,8 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # FastAPI App
 app = FastAPI(
     title="Audiobookshelf Bookmarks Extractor & Transparent Proxy",
-    description="Backend app for the bookmarks you create on ABS Mobile app (Transparent Audiobookshelf v1.5 Proxy).",
-    version="1.5"
+    description="Backend app for the bookmarks you create on ABS Mobile app (Transparent Audiobookshelf v1.5.1 Proxy).",
+    version="1.5.1"
 )
 
 # Global session cache so background workers and bookmark extractors have access to authenticated credentials
@@ -999,6 +1000,239 @@ def parse_frontmatter(content: str) -> Dict[str, Any]:
 
 # --- Core Audio Extraction & Transcription Logic (Thread-Safe & Shared) ---
 
+def create_unextractable_bookmark_snippet(
+    library_item_id: Optional[str],
+    bookmark_data: Dict[str, Any],
+    auth_token: Optional[str],
+    server_url: Optional[str],
+    error_reason: str,
+    user_info: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Creates a persistent snippet (.md and .json) for a bookmark found in Audiobookshelf
+    whose audio cannot be extracted (e.g. deleted/moved books, unmounted media folders).
+    Includes Date/Time, Book metadata, Bookmark metadata (with 'N/A' for unavailable fields),
+    and a clear explanation in the transcription box informing the user that this bookmark
+    was found in the library, but could not be extracted and transcribed.
+    """
+    if not user_info:
+        user_info = _last_authenticated_session.get("user") or {
+            "id": "default_user",
+            "username": os.environ.get("DEFAULT_USERNAME", "user"),
+            "raw_token": auth_token or ""
+        }
+
+    user_id = str(user_info.get("id") or "user_id")
+    username = str(user_info.get("username") or "user")
+    safe_username = sanitize_filename(username)
+
+    # 1. Resolve bookmark timing
+    t_raw = bookmark_data.get("time")
+    if t_raw is None:
+        t_raw = bookmark_data.get("start_time") or bookmark_data.get("startTime") or bookmark_data.get("offset")
+    try:
+        current_time = float(t_raw) if t_raw is not None else 0.0
+    except (ValueError, TypeError):
+        current_time = 0.0
+
+    bookmarked_duration_formatted = format_bookmarked_duration(current_time) if t_raw is not None else "N/A"
+
+    # 2. Resolve creation date/time
+    created_at_raw = bookmark_data.get("createdAt") or bookmark_data.get("created_at")
+    formatted_datetime = None
+    timestamp = None
+
+    if created_at_raw:
+        try:
+            c_float = float(created_at_raw)
+            if c_float > 1e11:  # Millisecond epoch timestamp
+                dt_obj = datetime.fromtimestamp(c_float / 1000.0)
+            else:
+                dt_obj = datetime.fromtimestamp(c_float)
+            formatted_datetime = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = dt_obj.strftime("%Y%m%d_%H%M%S")
+        except Exception:
+            if isinstance(created_at_raw, str) and len(created_at_raw) > 5:
+                formatted_datetime = created_at_raw
+
+    if not timestamp:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if not formatted_datetime:
+        formatted_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    bm_title = bookmark_data.get("title") or "N/A"
+    resolved_lib_id = library_item_id or bookmark_data.get("libraryItemId") or "N/A"
+
+    # 3. Attempt to fetch book metadata from Audiobookshelf if accessible
+    book_title = "N/A"
+    author = "N/A"
+    chapter_name = "N/A"
+
+    if resolved_lib_id and resolved_lib_id != "N/A" and server_url and auth_token:
+        try:
+            item_url = f"{server_url.rstrip('/')}/api/items/{resolved_lib_id}?expanded=1"
+            headers = {"Authorization": f"Bearer {auth_token}"}
+            item_resp = requests.get(item_url, headers=headers, timeout=5)
+            if item_resp.status_code == 200:
+                item_data = item_resp.json()
+                media = item_data.get("media", {})
+                meta = media.get("metadata", {})
+                bt = meta.get("title") or item_data.get("title")
+                if bt:
+                    book_title = bt
+                aut = extract_authors(meta, "N/A")
+                if aut and aut != "Unknown Author":
+                    author = aut
+                chapters = media.get("chapters") or []
+                for ch in chapters:
+                    start = float(ch.get("start") or 0.0)
+                    end = float(ch.get("end") or 0.0)
+                    if start <= current_time <= end:
+                        ch_title = ch.get("title") or ch.get("name")
+                        if ch_title:
+                            chapter_name = ch_title
+                        break
+        except Exception as query_err:
+            logger.debug(f"Could not query item metadata from ABS for unextractable bookmark: {query_err}")
+
+    # Fallback title if book was moved or deleted
+    if book_title == "N/A":
+        if bm_title and bm_title != "N/A":
+            book_title_display = f"{bm_title} (Book Unavailable)"
+            safe_book_title = sanitize_filename(bm_title)
+        else:
+            book_title_display = f"Unavailable Book ({resolved_lib_id[:8]})" if resolved_lib_id != "N/A" else "Unavailable Book"
+            safe_book_title = sanitize_filename(book_title_display)
+    else:
+        book_title_display = book_title
+        safe_book_title = sanitize_filename(book_title)
+
+    # 4. Format metadata header preceding transcription box
+    meta_header = (
+        f"- Date / Time: {formatted_datetime}\n"
+        f"- Book Title: {book_title_display}\n"
+        f"- Author(s): {author}\n"
+        f"- Bookmarked Duration: {bookmarked_duration_formatted}\n"
+        f"- Snippet Length: N/A\n"
+        f"- Chapter: {chapter_name}\n"
+        f"- Bookmark Title: {bm_title}"
+    )
+
+    clean_reason = error_reason.strip() if error_reason else "Audio source file could not be located"
+    if "detail=" in clean_reason:
+        clean_reason = clean_reason.split("detail=")[-1].strip("'\"")
+
+    notice_body = (
+        f"[Notice: This bookmark was found in your Audiobookshelf library, but could not be extracted and transcribed.\n"
+        f"Reason: {clean_reason}\n"
+        f"Note: The audiobook or audio file may have been moved, deleted, or unmounted from the server.]"
+    )
+
+    full_transcript = f"{meta_header}\n\n{notice_body}"
+
+    # 5. Determine target folder under user's bookmarks
+    target_base = VOLUME_DIR
+    target_user_name = safe_username
+    for cand in get_candidate_volume_dirs():
+        for u in [safe_username.lower(), safe_username]:
+            check_path = os.path.join(cand, u, "bookmarks")
+            if os.path.isdir(check_path):
+                target_base = cand
+                target_user_name = u
+                break
+
+    output_dir = os.path.join(target_base, target_user_name, "bookmarks", safe_book_title)
+    os.makedirs(output_dir, exist_ok=True)
+
+    output_md = os.path.join(output_dir, f"{timestamp}.md")
+    output_json = os.path.join(output_dir, f"{timestamp}.json")
+
+    md_content = f"""---
+title: "{book_title_display}"
+author: "{author}"
+chapter: "{chapter_name}"
+timestamp: "{timestamp}"
+date_time: "{formatted_datetime}"
+current_time: {current_time}
+bookmarked_duration: "{bookmarked_duration_formatted}"
+start_time: {current_time}
+duration: 0
+snippet_length: "N/A"
+library_item_id: "{resolved_lib_id}"
+user_id: "{user_id}"
+username: "{username}"
+transcription_engine: "N/A"
+extraction_status: "unavailable"
+bookmark_title: "{bm_title}"
+---
+
+# {book_title_display}
+
+{meta_header}
+
+---
+
+## Transcribed Text
+
+{notice_body}
+"""
+    with open(output_md, "w", encoding="utf-8") as f:
+        f.write(md_content)
+
+    meta_content = {
+        "id": f"{safe_book_title}-{timestamp}",
+        "book_title": book_title_display,
+        "author": author,
+        "chapter": chapter_name,
+        "timestamp": timestamp,
+        "date_time": formatted_datetime,
+        "start_time": current_time,
+        "current_time": current_time,
+        "bookmarked_duration": bookmarked_duration_formatted,
+        "duration": 0,
+        "snippet_length": "N/A",
+        "library_item_id": resolved_lib_id,
+        "user_id": user_id,
+        "username": username,
+        "transcript": full_transcript,
+        "raw_transcript": notice_body,
+        "audio_url": None,
+        "md_url": f"/bookmarks/{target_user_name}/{safe_book_title}/{timestamp}.md",
+        "file_path": output_md,
+        "mp3_path": None,
+        "json_path": output_json,
+        "extraction_method": "intercepted",
+        "created_at": formatted_datetime,
+        "transcription_engine": "N/A",
+        "extraction_status": "unavailable",
+        "bookmark_title": bm_title
+    }
+    with open(output_json, "w", encoding="utf-8") as f:
+        json.dump(meta_content, f, indent=2)
+
+    with _extractions_lock:
+        _recent_extractions.append({
+            "id": f"{safe_book_title}-{timestamp}",
+            "book_title": book_title_display,
+            "author": author,
+            "chapter": chapter_name,
+            "timestamp": timestamp,
+            "username": username,
+            "completed_at": datetime.now().isoformat(),
+            "extraction_method": "intercepted",
+            "extraction_status": "unavailable"
+        })
+        if len(_recent_extractions) > 100:
+            _recent_extractions.pop(0)
+
+    logger.info(f"Recorded unextractable bookmark fallback entry for '{book_title_display}' [{timestamp}]")
+    return {
+        "status": "unextractable_saved",
+        "message": "Bookmark recorded as unextractable snippet",
+        "snippet": meta_content
+    }
+
+
 def process_bookmark_extraction(
     library_item_id: Optional[str] = None,
     bookmark_data: Optional[Dict[str, Any]] = None,
@@ -1090,12 +1324,26 @@ def process_bookmark_extraction(
         )
 
     # 4. Resolve target audio file, book metadata, and timestamp
-    session_state = resolve_audio_target(
-        token=auth_token or user.get("raw_token") or "",
-        req=snippet_request,
-        user_info=user,
-        server_url=target_server
-    )
+    try:
+        session_state = resolve_audio_target(
+            token=auth_token or user.get("raw_token") or "",
+            req=snippet_request,
+            user_info=user,
+            server_url=target_server
+        )
+    except Exception as target_err:
+        if bookmark_data or is_intercepted:
+            logger.warning(f"Could not resolve audio target ({target_err}). Saving unextractable bookmark fallback...")
+            return create_unextractable_bookmark_snippet(
+                library_item_id=library_item_id or (bookmark_data.get("libraryItemId") if bookmark_data else None),
+                bookmark_data=bookmark_data or {},
+                auth_token=auth_token or user.get("raw_token"),
+                server_url=target_server,
+                error_reason=str(target_err),
+                user_info=user
+            )
+        raise
+
     current_time = session_state["currentTime"]
     file_path = session_state["file_path"]
     stream_url = session_state.get("stream_url")
@@ -1177,10 +1425,21 @@ def process_bookmark_extraction(
             input_target = stream_url
             use_stream = True
         else:
-            raise RuntimeError(
+            missing_err = (
                 f"Audio file '{file_path}' does not exist on host disk and no stream URL could be resolved. "
-                f"Please verify AUDIOBOOKS_PATH or PATH_MAPPINGS in ecosystem.config.cjs."
+                f"The audiobook may have been moved, deleted, or unmounted."
             )
+            if bookmark_data or is_intercepted:
+                logger.warning(f"{missing_err}. Saving unextractable bookmark fallback...")
+                return create_unextractable_bookmark_snippet(
+                    library_item_id=resolved_lib_item_id,
+                    bookmark_data=bookmark_data or {"title": full_book_title, "time": current_time},
+                    auth_token=auth_token or user.get("raw_token"),
+                    server_url=target_server,
+                    error_reason=missing_err,
+                    user_info=user
+                )
+            raise RuntimeError(missing_err)
 
     if not use_stream:
         is_mp3_source = file_path.lower().endswith(".mp3")
@@ -1636,6 +1895,21 @@ def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Opt
                 logger.info(f"[Auto-Sync] [✓] Successfully extracted '{b_title}'")
             except Exception as ex:
                 logger.error(f"[Auto-Sync] [✗] Failed extracting bookmark {bm}: {ex}")
+                logger.info(f"[Auto-Sync] Creating unextractable fallback bookmark for '{b_title}'...")
+                try:
+                    res = create_unextractable_bookmark_snippet(
+                        library_item_id=lib_id,
+                        bookmark_data=bm,
+                        auth_token=token,
+                        server_url=target_server,
+                        error_reason=str(ex),
+                        user_info=user_info
+                    )
+                    processed_count += 1
+                    _sync_state["total_synced"] += 1
+                    logger.info(f"[Auto-Sync] [✓] Recorded unextractable bookmark fallback for '{b_title}'")
+                except Exception as fb_err:
+                    logger.error(f"[Auto-Sync] [✗] Could not write unextractable fallback: {fb_err}")
 
             # Sleep 1.5s between jobs to throttle server CPU/load
             time.sleep(1.5)
@@ -1830,8 +2104,18 @@ async def intercept_bookmark_create(library_item_id: str, request: Request, libr
                 )
                 print(f"[✓] Worker finished extraction: {res.get('snippet', {}).get('mp3_file')}", flush=True)
             except Exception as bg_err:
-                print(f"[✗] Worker extraction failed: {bg_err}", flush=True)
+                print(f"[✗] Worker extraction failed: {bg_err}. Recording unextractable bookmark fallback...", flush=True)
                 logger.error(f"Background extraction failed for bookmark on item '{library_item_id}': {bg_err}", exc_info=True)
+                try:
+                    create_unextractable_bookmark_snippet(
+                        library_item_id=library_item_id,
+                        bookmark_data=bookmark_data,
+                        auth_token=auth_token,
+                        server_url=target_server,
+                        error_reason=str(bg_err)
+                    )
+                except Exception as fb_err:
+                    logger.error(f"Failed to record unextractable bookmark fallback: {fb_err}")
 
         asyncio.create_task(asyncio.to_thread(_safe_background_task))
     else:
@@ -2044,6 +2328,7 @@ async def get_user_bookmarks(
                                 "mp3_path": mp3_path if has_mp3 else None,
                                 "username": username,
                                 "extraction_method": metadata.get("extraction_method", "intercepted"),
+                                "extraction_status": metadata.get("extraction_status") or ("success" if has_mp3 else "unavailable"),
                                 "created_at": metadata.get("created_at") or base_name
                             })
 
@@ -2619,7 +2904,8 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "Audiobookshelf Bookmarks Extractor & Transparent Proxy",
-        "tagline": "Transparent sidecar proxy for Audiobookshelf v1.5 with automated bookmark clipping & transcription",
+        "tagline": "Transparent sidecar proxy for Audiobookshelf v1.5.1 with automated bookmark clipping & transcription",
+        "version": "1.5.1",
         "architecture_mode": "Option 3: Transparent Proxy & WebSockets (Port 13380)",
         "abs_target_server": ABS_TARGET_SERVER,
         "volume_dir": VOLUME_DIR,
