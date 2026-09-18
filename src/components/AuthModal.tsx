@@ -4,8 +4,6 @@ import {
   X, 
   RotateCw, 
   AlertCircle, 
-  ShieldCheck, 
-  ExternalLink,
   Lock,
   Radio,
   LogOut,
@@ -174,9 +172,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <h2 className="text-sm font-semibold text-white tracking-tight uppercase">
                 {user ? 'Change Audiobookshelf User' : 'Connect to Audiobookshelf'}
               </h2>
-              <p className="text-[11px] text-neutral-400 mt-0.5">
-                Backend app for the bookmarks you create on ABS Mobile app.
-              </p>
             </div>
           </div>
 
@@ -261,11 +256,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     </button>
                   )}
                 </div>
-                {!isIpPortUrl(serverUrl) && (
-                  <p className="text-[10px] text-neutral-400">
-                    Public domain detected. Click Lock when finished to lock this URL.
-                  </p>
-                )}
               </div>
             ) : (
               <div className="flex items-center justify-between p-2.5 bg-[#141414] border border-neutral-700">
@@ -337,9 +327,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 placeholder="Paste API Token / Bearer Token from ABS Profile"
                 className="w-full bg-[#181818] border border-neutral-700 hover:border-neutral-500 focus:border-neutral-300 focus:bg-[#202020] text-white px-3 py-2 text-xs focus:outline-none transition-colors"
               />
-              <p className="text-[11px] text-neutral-500 mt-1">
-                In Audiobookshelf: Click Profile icon &rarr; API Token &rarr; Copy Token.
-              </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -377,20 +364,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <div className="space-y-1">
                 <div className="font-semibold text-white">Connection Error</div>
                 <div className="text-neutral-300">{errorMsg}</div>
-                {errorMsg.includes('CORS') && (
-                  <div className="text-neutral-400 text-[11px] pt-1">
-                    Tip: Keep &quot;Backend Server Proxy&quot; enabled, or check the{' '}
-                    <a
-                      href="https://github.com/example/Audiobookshelf-Bookmarks-Extractor#cors-configuration-warning"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-white underline hover:text-neutral-300 inline-flex items-center gap-1"
-                    >
-                      <span>Reverse Proxy & Tunnel guide</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -404,24 +377,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 onChange={(e) => setRememberCredentials(e.target.checked)}
                 className="accent-neutral-200 w-3.5 h-3.5 cursor-pointer"
               />
-              <span>Remember connection on this device (auto-reconnects on reload)</span>
+              <span>Remember connection on this device</span>
             </label>
           </div>
 
           {/* Action Buttons */}
           <div className="pt-3 border-t border-neutral-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
-            {/* Demo session link hidden from user interface per admin configuration */}
-            {false && (
-              <button
-                type="button"
-                onClick={handleMockConnect}
-                disabled={isConnecting}
-                className="text-neutral-400 hover:text-white text-xs underline order-2 sm:order-1 transition-colors text-center sm:text-left py-1"
-              >
-                Explore with Test Demo Session
-              </button>
-            )}
-
             <div className="flex items-center justify-end gap-2.5 order-1 sm:order-2 shrink-0">
               <button
                 type="button"
@@ -451,20 +412,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           </div>
         </form>
-
-        {/* Security Footer Note */}
-        <div className="mt-4 pt-3 border-t border-neutral-900 flex items-center justify-between text-[11px] text-neutral-500">
-          <div className="flex items-center gap-1.5">
-            <ShieldCheck className="w-3.5 h-3.5 text-neutral-400" />
-            <span>
-              {rememberCredentials 
-                ? 'Connection stored securely in local browser storage on this device' 
-                : 'Single-Session: Connection details vanish on refresh'}
-            </span>
-          </div>
-          <span>v1.2</span>
-        </div>
-
       </div>
     </div>
   );

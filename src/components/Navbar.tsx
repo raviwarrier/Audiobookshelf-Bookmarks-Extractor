@@ -40,9 +40,6 @@ export const Navbar: React.FC<NavbarProps> = ({
             <h1 className="text-sm md:text-base font-semibold tracking-tight text-white">
               Audiobookshelf Bookmarks Extractor
             </h1>
-            <p className="text-xs text-neutral-400">
-              Backend app for the bookmarks you create on ABS Mobile app.
-            </p>
           </div>
         </div>
 
@@ -60,7 +57,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               <Bookmark className="w-3.5 h-3.5" />
-              <span>Capture & Snippet</span>
+              <span>Bookmark and Snip</span>
             </button>
 
             <button

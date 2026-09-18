@@ -19,7 +19,7 @@ import {
   BookOpen,
   ChevronDown
 } from 'lucide-react';
-import { Snippet, AbsUser } from '../types';
+import { Snippet, AbsUser, SyncState } from '../types';
 
 interface SnippetsViewProps {
   snippets: Snippet[];
@@ -28,6 +28,9 @@ interface SnippetsViewProps {
   serverUrl?: string;
   sidecarUrl?: string;
   useProxy?: boolean;
+  syncState?: SyncState | null;
+  isTriggeringSync?: boolean;
+  onTriggerSync?: () => Promise<void>;
   onDeleteSnippet: (id: string) => void;
   onNavigateToCapture: () => void;
   onRefreshSnippets?: () => Promise<void>;
@@ -41,6 +44,9 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
   serverUrl = 'http://localhost:13378',
   sidecarUrl = 'http://localhost:13380',
   useProxy = true,
+  syncState,
+  isTriggeringSync = false,
+  onTriggerSync,
   onDeleteSnippet,
   onNavigateToCapture,
   onRefreshSnippets,
@@ -48,6 +54,7 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedCitationId, setCopiedCitationId] = useState<string | null>(null);
 
   // Expand / Adjust Snippet Modal State
   const [expandSnippet, setExpandSnippet] = useState<Snippet | null>(null);
@@ -87,6 +94,16 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleCopyCitation = (snippet: Snippet) => {
+    const mins = Math.floor(snippet.startTime / 60);
+    const secs = Math.floor(snippet.startTime % 60);
+    const timeFormatted = `${mins}:${secs.toString().padStart(2, '0')}`;
+    const citation = `> "${snippet.transcript.trim()}"\n\n— *${snippet.bookTitle}* by ${snippet.author} (${snippet.chapterName}, offset ${timeFormatted})`;
+    navigator.clipboard.writeText(citation);
+    setCopiedCitationId(snippet.id);
+    setTimeout(() => setCopiedCitationId(null), 2500);
   };
 
   const handleDownloadMarkdown = (snippet: Snippet) => {
@@ -266,8 +283,8 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
           <h2 className="text-base font-semibold text-white tracking-tight uppercase">
             Saved Bookmarks & Transcripts
           </h2>
-          <p className="text-xs text-neutral-400 mt-0.5">
-            {snippets.length} audio clips & markdown files in library • Auto-synced
+          <p className="text-xs text-neutral-400 mt-0.5 font-mono">
+            {snippets.length} snippets
           </p>
         </div>
 
@@ -283,15 +300,15 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
             />
           </div>
 
-          {onRefreshSnippets && (
+          {onTriggerSync && (
             <button
-              onClick={onRefreshSnippets}
-              disabled={isLoadingSnippets}
-              title="Sync bookmarks from server volume"
+              onClick={onTriggerSync}
+              disabled={isTriggeringSync || syncState?.is_syncing}
               className="px-2.5 py-1.5 border border-neutral-700 bg-[#161616] hover:bg-[#222222] hover:border-neutral-500 text-xs text-neutral-200 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+              title="Sync bookmarks from server"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSnippets ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Sync</span>
+              <RotateCw className={`w-3.5 h-3.5 ${isTriggeringSync || syncState?.is_syncing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Sync Server</span>
             </button>
           )}
 
@@ -305,35 +322,12 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
         </div>
       </div>
 
-      {/* User-specific Volume Directory Scope Banner & Book Quick-Exports */}
-      <div className="flex flex-col gap-3 px-4 py-3 bg-[#0e0e0e] border border-neutral-700 text-xs text-neutral-300 font-mono">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <FolderTree className="w-3.5 h-3.5 text-neutral-400" />
-            <span className="text-neutral-400">Volume Storage:</span>
-            <span className="text-white font-semibold">
-              {user ? `${user.username}/bookmarks/` : 'username/bookmarks/'}
-            </span>
-            <span className="text-[10px] bg-neutral-800 text-neutral-400 px-1.5 py-0.5 border border-neutral-700">
-              User Isolated
-            </span>
-          </div>
-          {user && (
-            <div className="flex items-center gap-1.5 text-neutral-400">
-              <UserIcon className="w-3 h-3 text-neutral-400" />
-              <span>Logged in as:</span>
-              <span className="text-white font-medium">@{user.username}</span>
-            </div>
-          )}
+      {exportError && (
+        <div className="p-3 bg-neutral-950 border border-red-800 text-[11px] text-red-400 flex items-center gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5" />
+          <span>{exportError}</span>
         </div>
-
-        {exportError && (
-          <div className="text-[11px] text-red-400 flex items-center gap-1.5 pt-1">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            <span>{exportError}</span>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Book Filter Chips (When multiple books exist) */}
       {uniqueBooks.length > 1 && (
@@ -430,22 +424,41 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs text-neutral-400">
                   <span className="font-mono text-[11px] uppercase">Whisper Transcript</span>
-                  <button
-                    onClick={() => handleCopyTranscript(snippet.id, snippet.transcript)}
-                    className="flex items-center gap-1 text-neutral-300 hover:text-white transition-colors"
-                  >
-                    {copiedId === snippet.id ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-white" />
-                        <span>Copied</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>Copy Text</span>
-                      </>
-                    )}
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => handleCopyCitation(snippet)}
+                      title="Copy formatted quote citation with book title, author, and timestamp"
+                      className="flex items-center gap-1 text-neutral-400 hover:text-white transition-colors text-[11px]"
+                    >
+                      {copiedCitationId === snippet.id ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Citation Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Cite / Quote</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => handleCopyTranscript(snippet.id, snippet.transcript)}
+                      className="flex items-center gap-1 text-neutral-300 hover:text-white transition-colors"
+                    >
+                      {copiedId === snippet.id ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-white" />
+                          <span>Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy Text</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="p-3 bg-[#151515] border border-neutral-700 text-xs text-neutral-200 leading-relaxed font-mono whitespace-pre-wrap">
@@ -581,17 +594,6 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
               >
                 <X className="w-4 h-4" />
               </button>
-            </div>
-
-            {/* Warning Callout Box */}
-            <div className="bg-amber-950/30 border border-amber-800/60 p-3 text-xs text-amber-200/90 flex items-start gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <span className="font-semibold text-amber-300">Replacement Notice:</span>
-                <p className="text-[11px] leading-relaxed text-amber-200/80">
-                  Expanding this snippet will re-clip the audio and generate a fresh Whisper transcription. The previous .MP3 and Markdown note will be replaced.
-                </p>
-              </div>
             </div>
 
             {/* Adjustment Form */}

@@ -353,6 +353,29 @@ async function startServer() {
     }
   });
 
+  // Direct proxy for automated bookmark background sync
+  app.all(["/api/user/sync-bookmarks", "/api/sync-bookmarks", "/api/user/sync-status", "/api/sync-status"], async (req, res) => {
+    try {
+      const sidecarBase = (process.env.SIDECAR_URL || `http://127.0.0.1:${process.env.SIDECAR_PORT || 13380}`).replace(/\/+$/, "");
+      const targetUrl = `${sidecarBase}${req.originalUrl}`;
+      const forwardHeaders: Record<string, string> = {};
+      if (req.headers.authorization) forwardHeaders["authorization"] = req.headers.authorization;
+      if (req.headers["x-abs-server-url"]) forwardHeaders["x-abs-server-url"] = req.headers["x-abs-server-url"] as string;
+      if (req.headers["content-type"]) forwardHeaders["content-type"] = req.headers["content-type"] as string;
+
+      const sidecarRes = await fetch(targetUrl, {
+        method: req.method,
+        headers: forwardHeaders,
+        body: ["POST", "PUT"].includes(req.method) ? JSON.stringify(req.body) : undefined,
+      });
+      const data = await sidecarRes.json();
+      res.status(sidecarRes.status).json(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Sync proxy failed";
+      res.status(502).json({ error: msg });
+    }
+  });
+
   // System configuration endpoint: provides detected ports & server URLs
   app.get("/api/config", (req, res) => {
     const sidecarPort = process.env.SIDECAR_PORT || 13380;

@@ -3,7 +3,7 @@ import { Navbar } from './components/Navbar';
 import { CaptureView } from './components/CaptureView';
 import { SnippetsView } from './components/SnippetsView';
 import { AuthModal } from './components/AuthModal';
-import { AbsUser, AbsActiveSession, Snippet } from './types';
+import { AbsUser, AbsActiveSession, Snippet, SyncState } from './types';
 import { wipeSessionKey } from './lib/crypto';
 import { authenticateAbs, fetchActiveSession, formatAuthors } from './lib/absClient';
 import { getStoredCredentials, saveStoredCredentials, clearStoredCredentials } from './lib/authStorage';
@@ -68,6 +68,10 @@ export function App() {
   // Snippets library state
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [isLoadingBookmarks, setIsLoadingBookmarks] = useState<boolean>(false);
+
+  // Background Sync state
+  const [syncState, setSyncState] = useState<SyncState | null>(null);
+  const [isTriggeringSync, setIsTriggeringSync] = useState<boolean>(false);
 
   // Notification toast for automatic background detection
   const [notification, setNotification] = useState<{ message: string; id: string } | null>(null);
@@ -361,6 +365,10 @@ export function App() {
           }
         }
 
+        if (statusData && statusData.sync_state) {
+          setSyncState(statusData.sync_state);
+        }
+
         if (statusData && Array.isArray(statusData.recent) && statusData.recent.length > 0) {
           const latestEvent = statusData.recent[statusData.recent.length - 1];
           if (latestEvent?.timestamp && latestEvent.timestamp !== lastKnownTimestampRef.current) {
@@ -384,6 +392,43 @@ export function App() {
 
     return () => clearInterval(interval);
   }, [activeToken, user, sidecarUrl, serverUrl, useProxy, syncUserBookmarks]);
+
+  // Autonomous / Manual Trigger for Audiobookshelf Background Bookmark Sync
+  const handleTriggerSync = useCallback(async () => {
+    if (!activeToken || !user || isTriggeringSync) return;
+    setIsTriggeringSync(true);
+    try {
+      const endpoint = `${sidecarUrl.replace(/\/+$/, '')}/api/user/sync-bookmarks`;
+      if (useProxy) {
+        await fetch('/api/proxy/abs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            targetUrl: endpoint,
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${activeToken}`,
+              'X-ABS-Server-Url': serverUrl,
+            }
+          })
+        });
+      } else {
+        await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${activeToken}`,
+            'X-ABS-Server-Url': serverUrl,
+          }
+        });
+      }
+      // Refresh local snippet list
+      await syncUserBookmarks(sidecarUrl, activeToken, user.username, useProxy);
+    } catch (e) {
+      console.warn('Sync trigger notice:', e);
+    } finally {
+      setIsTriggeringSync(false);
+    }
+  }, [activeToken, user, isTriggeringSync, sidecarUrl, useProxy, serverUrl, syncUserBookmarks]);
 
   // Re-sync session playback position on demand
   const handleRefreshSession = async () => {
@@ -536,14 +581,17 @@ export function App() {
             serverUrl={serverUrl}
             sidecarUrl={sidecarUrl}
             useProxy={useProxy}
+            syncState={syncState}
+            isTriggeringSync={isTriggeringSync}
+            onTriggerSync={handleTriggerSync}
             onDeleteSnippet={handleDeleteSnippet}
             onNavigateToCapture={() => setActiveView('capture')}
             onRefreshSnippets={async () => {
               if (activeToken && user) {
-                await syncUserBookmarks(sidecarUrl, activeToken, user.username, useProxy);
+                await handleTriggerSync();
               }
             }}
-            isLoadingSnippets={isLoadingBookmarks}
+            isLoadingSnippets={isLoadingBookmarks || isTriggeringSync}
           />
         )}
       </main>
@@ -562,7 +610,7 @@ export function App() {
 
       {/* Minimal Footer */}
       <footer className="border-t border-neutral-900 px-6 py-4 text-center text-xs text-neutral-600 font-mono">
-        Audiobookshelf Bookmarks Manager • Real-Time Synchronization Enabled
+        Audiobookshelf Bookmarks Extractor
       </footer>
     </div>
   );

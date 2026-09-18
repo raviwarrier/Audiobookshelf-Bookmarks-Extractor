@@ -88,6 +88,53 @@ INTERCEPT_SNIPPET_DURATION = int(os.environ.get("INTERCEPT_SNIPPET_DURATION", os
 INTERCEPT_PRE_ROLL = float(os.environ.get("INTERCEPT_PRE_ROLL", str(SNIPPET_PRE_ROLL)))
 DEFAULT_ABS_URL = os.environ.get("DEFAULT_ABS_URL", os.environ.get("ABS_PUBLIC_URL", "")).strip()
 
+# ==============================================================================
+# Automated Background Bookmark Sync Daemon Configuration
+# Enables 24/7 autonomous extraction of bookmarks created on Android/iOS/Web
+# without requiring any reverse proxy interception (no routing to port 13380 required).
+# ==============================================================================
+AUTO_SYNC_BOOKMARKS = os.environ.get("AUTO_SYNC_BOOKMARKS", "true").lower() in ("true", "1", "yes")
+BOOKMARK_SYNC_INTERVAL = int(os.environ.get("BOOKMARK_SYNC_INTERVAL", os.environ.get("SYNC_INTERVAL", "30")))
+ABS_API_TOKEN = os.environ.get("ABS_API_TOKEN", os.environ.get("ABS_TOKEN", "")).strip()
+
+_sync_state: Dict[str, Any] = {
+    "is_syncing": False,
+    "last_synced_at": None,
+    "total_synced": 0,
+    "current_item": None,
+    "last_error": None
+}
+_sync_lock = threading.Lock()
+
+def save_sync_session(token: str, server_url: str, user_info: Dict[str, Any]):
+    """Persists authenticated credentials so background sync runs 24/7 across server reboots."""
+    try:
+        session_file = os.path.join(VOLUME_DIR, ".abs_sync_session.json")
+        data = {
+            "token": token,
+            "server_url": server_url,
+            "user": {
+                "id": str(user_info.get("id", "")),
+                "username": str(user_info.get("username", ""))
+            },
+            "saved_at": datetime.now().isoformat()
+        }
+        with open(session_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not persist sync session: {e}")
+
+def load_sync_session() -> Optional[Dict[str, Any]]:
+    """Loads previously saved session credentials for autonomous sync."""
+    try:
+        session_file = os.path.join(VOLUME_DIR, ".abs_sync_session.json")
+        if os.path.exists(session_file):
+            with open(session_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Could not load sync session: {e}")
+    return None
+
 # In-memory tracking of recent extraction completions for real-time frontend notifications
 _recent_extractions: List[Dict[str, Any]] = []
 _extractions_lock = threading.Lock()
@@ -254,13 +301,14 @@ _last_authenticated_session: Dict[str, Any] = {
 
 @app.on_event("startup")
 async def startup_event():
-    """Pre-warm Whisper model asynchronously on server startup to avoid first-request download lag."""
+    """Pre-warm Whisper model asynchronously on server startup and start autonomous background bookmark sync."""
     def _warmup():
         try:
             get_whisper_model()
         except Exception as e:
             logger.warning(f"Whisper background pre-warm encountered: {e}")
     asyncio.create_task(asyncio.to_thread(_warmup))
+    asyncio.create_task(background_bookmark_sync_daemon())
 
 # Enable CORS so native mobile apps (iOS / Android), WebViews, and external clients can call endpoints directly
 app.add_middleware(
@@ -551,6 +599,9 @@ def validate_abs_token(token: str, server_url: Optional[str] = None) -> Dict[str
             "user": res_user,
             "time": datetime.now()
         }
+
+        # Persist session to disk for 24/7 background sync daemon
+        save_sync_session(token, target_server, res_user)
 
         return res_user
     except requests.exceptions.RequestException as e:
@@ -1356,6 +1407,307 @@ transcription_engine: "{engine_used}"
     }
 
 
+# ==============================================================================
+# Autonomous Background Bookmark Sync Engine
+# Continuously queries Audiobookshelf for bookmarks created on Android/iOS/Web
+# and extracts/transcribes any that do not yet exist on disk without requiring
+# any reverse proxy modifications.
+# ==============================================================================
+
+def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Scans Audiobookshelf for bookmarks created on mobile/web apps and automatically extracts
+    and transcribes any that do not yet exist on disk in the user's bookmarks folder.
+    Runs asynchronously in the background without needing reverse proxy interception on port 13380.
+    """
+    global _sync_state
+    with _sync_lock:
+        if _sync_state.get("is_syncing", False):
+            return {
+                "status": "in_progress",
+                "message": "A sync cycle is already currently running.",
+                "current_item": _sync_state.get("current_item")
+            }
+        _sync_state["is_syncing"] = True
+
+    try:
+        token = force_token or ABS_API_TOKEN or _last_authenticated_session.get("token")
+        target_server = resolve_abs_server_url(req_url=force_server)
+
+        if not token:
+            persisted = load_sync_session()
+            if persisted and persisted.get("token"):
+                token = persisted["token"]
+                if persisted.get("server_url") and not force_server:
+                    target_server = resolve_abs_server_url(req_url=persisted["server_url"])
+
+        if not token:
+            _sync_state["is_syncing"] = False
+            return {
+                "status": "idle",
+                "message": "No active authentication. Log into the Web Dashboard once or set ABS_API_TOKEN in ecosystem.config.cjs to enable autonomous 24/7 sync.",
+                "unextracted_count": 0,
+                "processed_count": 0
+            }
+
+        token = token.strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        # Query user data from Audiobookshelf
+        url = f"{target_server}/api/me"
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            err_msg = f"Audiobookshelf server at {target_server} returned HTTP {resp.status_code}"
+            logger.warning(f"[Auto-Sync] {err_msg}")
+            _sync_state["last_error"] = err_msg
+            _sync_state["is_syncing"] = False
+            return {"status": "error", "message": err_msg}
+
+        user_resp = resp.json()
+        user_info = user_resp.get("user") if isinstance(user_resp.get("user"), dict) else user_resp
+        username = user_info.get("username") or user_info.get("name") or "user"
+        user_id = user_info.get("id") or "user_id"
+
+        # Cache credentials for ongoing daemon use
+        _last_authenticated_session["token"] = token
+        _last_authenticated_session["user"] = {
+            "id": str(user_id),
+            "username": str(username),
+            "raw_token": token,
+            "server_url": target_server
+        }
+        save_sync_session(token, target_server, _last_authenticated_session["user"])
+
+        # Collect bookmarks from user profile, media progress, and active listening sessions
+        candidate_bookmarks = []
+        seen_keys = set()
+
+        def _add_candidate(bm_data: Dict[str, Any], default_lib_id: Optional[str] = None):
+            if not isinstance(bm_data, dict):
+                return
+            t_raw = bm_data.get("time")
+            if t_raw is None:
+                t_raw = bm_data.get("start_time") or bm_data.get("startTime") or bm_data.get("offset")
+            if t_raw is None:
+                return
+            try:
+                bm_time = float(t_raw)
+            except (ValueError, TypeError):
+                return
+
+            lib_id = bm_data.get("libraryItemId") or default_lib_id
+            if not lib_id:
+                return
+
+            key = (str(lib_id), round(bm_time, 1))
+            if key in seen_keys:
+                return
+            seen_keys.add(key)
+
+            candidate_bookmarks.append({
+                "id": bm_data.get("id"),
+                "libraryItemId": str(lib_id),
+                "time": bm_time,
+                "title": bm_data.get("title") or "",
+                "createdAt": bm_data.get("createdAt")
+            })
+
+        # 1. User bookmarks
+        for bm in (user_info.get("bookmarks") or []):
+            _add_candidate(bm)
+
+        # 2. Bookmarks in mediaProgress
+        for prog in (user_info.get("mediaProgress") or []):
+            lib_id = prog.get("libraryItemId")
+            for bm in (prog.get("bookmarks") or []):
+                _add_candidate(bm, default_lib_id=lib_id)
+
+        # 3. Active listening sessions
+        try:
+            sess_resp = requests.get(f"{target_server}/api/me/listening-sessions", headers=headers, timeout=10)
+            if sess_resp.status_code == 200:
+                s_data = sess_resp.json()
+                s_list = s_data if isinstance(s_data, list) else (s_data.get("sessions") or [])
+                for s in s_list:
+                    lib_id = s.get("libraryItemId") or s.get("id")
+                    for bm in (s.get("bookmarks") or []):
+                        _add_candidate(bm, default_lib_id=lib_id)
+        except Exception:
+            pass
+
+        if not candidate_bookmarks:
+            _sync_state["last_synced_at"] = datetime.now().isoformat()
+            _sync_state["is_syncing"] = False
+            return {
+                "status": "ok",
+                "message": "No bookmarks found on Audiobookshelf server.",
+                "total_bookmarks": 0,
+                "unextracted_count": 0,
+                "processed_count": 0
+            }
+
+        # Scan local disk for existing extractions
+        safe_username = sanitize_filename(username)
+        existing_extractions = []
+        for root in get_candidate_volume_dirs():
+            for u in [safe_username, safe_username.lower(), str(user_id)]:
+                for sub in [os.path.join(root, u, "bookmarks"), os.path.join(root, u)]:
+                    if not os.path.isdir(sub):
+                        continue
+                    for book_dir in os.listdir(sub):
+                        full_b_dir = os.path.join(sub, book_dir)
+                        if not os.path.isdir(full_b_dir) or book_dir.lower() in ("bookmarks", "snippets"):
+                            continue
+                        for f in os.listdir(full_b_dir):
+                            if f.endswith(".json"):
+                                try:
+                                    with open(os.path.join(full_b_dir, f), "r", encoding="utf-8") as jf:
+                                        meta = json.load(jf)
+                                        existing_extractions.append({
+                                            "library_item_id": meta.get("library_item_id"),
+                                            "current_time": float(meta.get("current_time", -999)),
+                                            "start_time": float(meta.get("start_time", -999)),
+                                            "duration": float(meta.get("duration", 60))
+                                        })
+                                except Exception:
+                                    pass
+
+        # Identify unextracted bookmarks
+        unextracted = []
+        for cand in candidate_bookmarks:
+            c_lib_id = cand["libraryItemId"]
+            c_time = cand["time"]
+
+            is_already = False
+            for ext in existing_extractions:
+                if ext["library_item_id"] and ext["library_item_id"] == c_lib_id:
+                    if abs(ext["current_time"] - c_time) <= 15.0:
+                        is_already = True
+                        break
+                    if ext["start_time"] <= c_time <= (ext["start_time"] + ext["duration"]):
+                        is_already = True
+                        break
+                elif abs(ext["current_time"] - c_time) <= 8.0:
+                    is_already = True
+                    break
+
+            if not is_already:
+                unextracted.append(cand)
+
+        if not unextracted:
+            _sync_state["last_synced_at"] = datetime.now().isoformat()
+            _sync_state["is_syncing"] = False
+            return {
+                "status": "ok",
+                "message": f"All {len(candidate_bookmarks)} Audiobookshelf bookmarks are already synchronized.",
+                "total_bookmarks": len(candidate_bookmarks),
+                "unextracted_count": 0,
+                "processed_count": 0
+            }
+
+        logger.info(f"[Auto-Sync] Found {len(unextracted)} unextracted bookmark(s) on Audiobookshelf for '{username}'. Processing in background...")
+
+        processed_count = 0
+        for idx, bm in enumerate(unextracted):
+            lib_id = bm["libraryItemId"]
+            b_time = bm["time"]
+            b_title = bm["title"] or f"Bookmark @ {format_bookmarked_duration(b_time)}"
+
+            _sync_state["current_item"] = f"[{idx + 1}/{len(unextracted)}] {b_title}"
+
+            try:
+                res = process_bookmark_extraction(
+                    library_item_id=lib_id,
+                    bookmark_data=bm,
+                    auth_token=token,
+                    server_url=target_server,
+                    duration=INTERCEPT_SNIPPET_DURATION,
+                    custom_pre_roll=INTERCEPT_PRE_ROLL,
+                    is_intercepted=True
+                )
+                processed_count += 1
+                _sync_state["total_synced"] += 1
+                logger.info(f"[Auto-Sync] [✓] Successfully extracted '{b_title}'")
+            except Exception as ex:
+                logger.error(f"[Auto-Sync] [✗] Failed extracting bookmark {bm}: {ex}")
+
+            # Sleep 1.5s between jobs to throttle server CPU/load
+            time.sleep(1.5)
+
+        _sync_state["last_synced_at"] = datetime.now().isoformat()
+        _sync_state["current_item"] = None
+        _sync_state["is_syncing"] = False
+
+        return {
+            "status": "success",
+            "message": f"Auto-Sync completed. Processed {processed_count} of {len(unextracted)} unextracted bookmarks.",
+            "total_bookmarks": len(candidate_bookmarks),
+            "unextracted_count": len(unextracted),
+            "processed_count": processed_count
+        }
+
+    except Exception as e:
+        logger.error(f"[Auto-Sync] Sync cycle failed: {e}", exc_info=True)
+        _sync_state["last_error"] = str(e)
+        _sync_state["current_item"] = None
+        _sync_state["is_syncing"] = False
+        return {"status": "error", "message": str(e)}
+
+
+async def background_bookmark_sync_daemon():
+    """
+    Continuous background loop that automatically checks for new Audiobookshelf bookmarks
+    every BOOKMARK_SYNC_INTERVAL seconds. Runs autonomously without requiring reverse proxy changes.
+    """
+    logger.info(f"[Auto-Sync] Background daemon started (Interval: {BOOKMARK_SYNC_INTERVAL}s, Enabled: {AUTO_SYNC_BOOKMARKS})")
+    await asyncio.sleep(5)  # Allow server initialization
+    while True:
+        try:
+            if AUTO_SYNC_BOOKMARKS and not _sync_state.get("is_syncing", False):
+                await asyncio.to_thread(run_bookmark_sync_cycle)
+        except Exception as e:
+            logger.warning(f"[Auto-Sync Daemon] Loop exception: {e}")
+        await asyncio.sleep(BOOKMARK_SYNC_INTERVAL)
+
+
+@app.post("/api/user/sync-bookmarks")
+@app.post("/api/sync-bookmarks")
+async def trigger_bookmark_sync(
+    request: Request,
+    raw_token: Optional[str] = Depends(extract_token_flexible)
+):
+    """
+    Triggers an immediate background sync check for the user's bookmarks across Audiobookshelf.
+    Extracts and transcribes any newly detected bookmarks without requiring reverse proxy changes.
+    """
+    server_url = resolve_abs_server_url(
+        header_url=request.headers.get("X-ABS-Server-Url") or request.headers.get("X-Server-Url") or request.headers.get("X-ABS-URL"),
+        query_url=request.query_params.get("server_url") or request.query_params.get("serverUrl")
+    )
+    result = await asyncio.to_thread(run_bookmark_sync_cycle, force_token=raw_token, force_server=server_url)
+    return result
+
+
+@app.get("/api/user/sync-status")
+@app.get("/api/sync-status")
+async def get_sync_status():
+    """
+    Returns the current status of the automated background bookmark sync daemon.
+    """
+    return {
+        "status": "ok",
+        "enabled": AUTO_SYNC_BOOKMARKS,
+        "interval_seconds": BOOKMARK_SYNC_INTERVAL,
+        "state": _sync_state
+    }
+
+
 # --- Middleware Interceptor Proxy: Automated Event-Driven Bookmark Capture ---
 
 @app.post("/api/me/item/{library_item_id}/bookmark")
@@ -1727,7 +2079,8 @@ async def get_bookmarks_status(
         "status": "ok",
         "username": username,
         "total_recent": len(user_events),
-        "recent": user_events[-10:] if user_events else []
+        "recent": user_events[-10:] if user_events else [],
+        "sync_state": _sync_state
     }
 
 

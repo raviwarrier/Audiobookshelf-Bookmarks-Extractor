@@ -69,7 +69,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
   const [absBookmarkSuccess, setAbsBookmarkSuccess] = useState<string | null>(null);
 
   // Trigger Snippet Extraction & Speech Transcription on the FastAPI Sidecar
-  const handleCreateSnippet = async () => {
+  const handleCreateSnippet = async (explicitOffset?: number, explicitDuration?: number) => {
     if (!session) {
       setErrorMsg('No active audiobook session found. Connect to Audiobookshelf first.');
       return;
@@ -84,9 +84,11 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
     setErrorMsg(null);
     setIsExtracting(true);
 
-    const computedStart = customOffset !== null 
-      ? Math.max(0, customOffset) 
+    const activeOffset = explicitOffset !== undefined ? explicitOffset : customOffset;
+    const computedStart = activeOffset !== null && activeOffset !== undefined
+      ? Math.max(0, activeOffset) 
       : Math.max(0, session.currentTime - 30);
+    const snipDuration = explicitDuration || duration;
 
     try {
       setCurrentStep('Connecting to sidecar POST /api/snippet...');
@@ -99,7 +101,7 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
 
       const fetchUrl = shouldProxySidecar ? '/api/proxy/abs' : sidecarEndpoint;
       const snippetPayload = {
-        duration,
+        duration: snipDuration,
         server_url: serverUrl,
         serverUrl: serverUrl,
         library_item_id: session?.libraryItemId,
@@ -260,9 +262,6 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
             <h2 className="text-base font-semibold text-white tracking-tight uppercase">
               No Active Audiobookshelf Session
             </h2>
-            <p className="text-xs text-neutral-400">
-              Connect with your API Key or Username/Password to automatically load your current audiobook, playback offset, and chapter.
-            </p>
           </div>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
@@ -499,17 +498,6 @@ export const CaptureView: React.FC<CaptureViewProps> = ({
                 <div className="space-y-1.5 flex-1">
                   <div className="font-semibold text-white">Extraction / Sidecar Error</div>
                   <div className="text-neutral-300 leading-relaxed">{errorMsg}</div>
-                  <div className="text-[11px] text-neutral-400 pt-1 border-t border-neutral-700">
-                    Need help? Make sure the Python FastAPI sidecar is running (e.g.{' '}
-                    <code className="text-white bg-[#101010] px-1 py-0.5 border border-neutral-700">
-                      pm2 start ecosystem.config.cjs
-                    </code>{' '}
-                    or{' '}
-                    <code className="text-white bg-[#101010] px-1 py-0.5 border border-neutral-700">
-                      uvicorn main:app --port 13380
-                    </code>
-                    ).
-                  </div>
                 </div>
               </div>
             )}

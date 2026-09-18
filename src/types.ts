@@ -68,3 +68,11 @@ export interface StoredCredentials {
   password?: string;
   remember: boolean;
 }
+
+export interface SyncState {
+  is_syncing: boolean;
+  last_synced_at: string | null;
+  total_synced: number;
+  current_item?: string | null;
+  last_error?: string | null;
+}
