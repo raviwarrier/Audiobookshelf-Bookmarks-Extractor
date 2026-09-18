@@ -22,6 +22,9 @@ data/snippets/
 # Audio snippet files, bookmarks & user media
 bookmarks/
 snippets/
+installation_date.json
+.installation_date.json
+.deleted_tombstones.json
 *.mp3
 *.m4b
 *.m4a

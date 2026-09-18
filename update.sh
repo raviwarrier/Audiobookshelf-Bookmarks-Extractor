@@ -85,6 +85,11 @@ else
     echo -e "   ${YELLOW}npm not found. Skipping web build step.${NC}"
 fi
 
+# Ensure existing installation_date.json is protected and never overwritten
+if [ -f "$SCRIPT_DIR/init_installation_date.py" ]; then
+    $PYTHON_BIN "$SCRIPT_DIR/init_installation_date.py" 2>/dev/null || true
+fi
+
 # 4. PM2 Service Reload (if active)
 echo -e "\n${BLUE}[4/4] Checking PM2 service status...${NC}"
 if command -v pm2 &>/dev/null; then

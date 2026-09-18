@@ -76,4 +76,8 @@ export interface SyncState {
   total_synced: number;
   current_item?: string | null;
   last_error?: string | null;
+  installation_date?: string;
+  cutoff_datetime?: string;
+  skipped_before_cutoff?: number;
+  skipped_tombstoned?: number;
 }

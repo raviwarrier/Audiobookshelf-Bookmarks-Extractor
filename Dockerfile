@@ -24,8 +24,9 @@ RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('base.en',
 # 2. Backup engine: Vosk lightweight speech model
 RUN python3 -c "from vosk import Model; Model(model_name='vosk-model-small-en-us-0.15')"
 
-# Copy application source and dashboard templates
+# Copy application source, initialization scripts, and dashboard templates
 COPY main.py .
+COPY init_installation_date.py .
 COPY templates/ ./templates/
 
 # Expose ports: 13380 (sidecar & proxy default) and 13379 (web dashboard)
@@ -42,5 +43,6 @@ ENV WHISPER_COMPUTE_TYPE="int8"
 ENV VOSK_MODEL_NAME="vosk-model-small-en-us-0.15"
 ENV PORT=13380
 
-# Start FastAPI server
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "13380"]
+# Execute installation date initializer before starting uvicorn
+# (Preserves existing date in /data/installation_date.json across container updates)
+CMD ["sh", "-c", "python3 init_installation_date.py || true; exec uvicorn main:app --host 0.0.0.0 --port 13380"]

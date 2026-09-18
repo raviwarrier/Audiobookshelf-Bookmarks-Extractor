@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import dotenv from "dotenv";
 import http from "node:http";
 import https from "node:https";
@@ -144,7 +145,75 @@ function resilientProxyRequest(
   });
 }
 
+function ensureInstallationDateConfig(): { installation_date: string; cutoff_datetime: string; cutoff_timestamp: number; installed_at: string } {
+  const baseDir = process.cwd();
+  const volumeDir = process.env.VOLUME_DIR || path.join(baseDir, "bookmarks");
+  const candidates = [
+    path.join(baseDir, "installation_date.json"),
+    path.join(volumeDir, "installation_date.json"),
+    path.join(baseDir, ".installation_date.json"),
+    path.join(volumeDir, ".installation_date.json"),
+  ];
+
+  // 1. Check if an existing configuration exists (never overwrite on updates/restarts)
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        const raw = fs.readFileSync(candidate, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed.installation_date || parsed.cutoff_datetime) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore parse errors and proceed
+    }
+  }
+
+  // 2. File does not exist: dynamically compute values from system clock at first start
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const dateStr = `${year}-${month}-${day}`;
+  const cutoffDatetime = `${dateStr}T00:00:00`;
+  const cutoffTimestamp = new Date(year, now.getMonth(), now.getDate(), 0, 0, 0).getTime() / 1000;
+
+  const configData = {
+    installation_date: dateStr,
+    cutoff_datetime: cutoffDatetime,
+    cutoff_timestamp: cutoffTimestamp,
+    installed_at: now.toISOString(),
+    installed_at_utc: now.toISOString(),
+    note: `Immutable installation date created on first install. Bookmarks created prior to ${cutoffDatetime} are excluded from automated extraction.`,
+  };
+
+  // Save to baseDir and volumeDir
+  const saveTargets = [candidates[0]];
+  if (volumeDir && volumeDir !== baseDir) {
+    saveTargets.push(candidates[1]);
+  }
+
+  for (const target of saveTargets) {
+    try {
+      const parentDir = path.dirname(target);
+      if (parentDir && !fs.existsSync(parentDir)) {
+        fs.mkdirSync(parentDir, { recursive: true });
+      }
+      fs.writeFileSync(target, JSON.stringify(configData, null, 2), "utf-8");
+      console.log(`[Installation Date] Dynamically recorded initial installation config at '${target}': ${dateStr}`);
+    } catch (err) {
+      console.warn(`[Installation Date] Could not write config to '${target}':`, err);
+    }
+  }
+
+  return configData;
+}
+
 async function startServer() {
+  // Ensure installation_date.json exists before app start, without overwriting on updates
+  const installationConfig = ensureInstallationDateConfig();
+
   const app = express();
 
   // Port configuration:
@@ -353,8 +422,8 @@ async function startServer() {
     }
   });
 
-  // Direct proxy for automated bookmark background sync
-  app.all(["/api/user/sync-bookmarks", "/api/sync-bookmarks", "/api/user/sync-status", "/api/sync-status"], async (req, res) => {
+  // Direct proxy for automated bookmark background sync & installation cutoff
+  app.all(["/api/user/sync-bookmarks", "/api/sync-bookmarks", "/api/user/sync-status", "/api/sync-status", "/api/installation-date", "/api/user/installation-date"], async (req, res) => {
     try {
       const sidecarBase = (process.env.SIDECAR_URL || `http://127.0.0.1:${process.env.SIDECAR_PORT || 13380}`).replace(/\/+$/, "");
       const targetUrl = `${sidecarBase}${req.originalUrl}`;
@@ -371,6 +440,17 @@ async function startServer() {
       const data = await sidecarRes.json();
       res.status(sidecarRes.status).json(data);
     } catch (err: unknown) {
+      // If the sidecar is temporarily starting or offline and the client requests installation-date, return cached config
+      if (req.originalUrl.includes("installation-date")) {
+        return res.json({
+          status: "success",
+          installation_date: installationConfig.installation_date,
+          cutoff_datetime: installationConfig.cutoff_datetime,
+          cutoff_timestamp: installationConfig.cutoff_timestamp,
+          config: installationConfig,
+          source: "server_cache",
+        });
+      }
       const msg = err instanceof Error ? err.message : "Sync proxy failed";
       res.status(502).json({ error: msg });
     }

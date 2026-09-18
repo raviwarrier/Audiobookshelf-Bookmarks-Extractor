@@ -185,16 +185,12 @@ chmod 600 "$ENV_FILE"
 echo -e "${BLUE}[*] Verifying Git privacy protection...${NC}"
 GITIGNORE_FILE="$SCRIPT_DIR/.gitignore"
 if [ -f "$GITIGNORE_FILE" ]; then
-    if ! grep -q "^\.env$" "$GITIGNORE_FILE"; then
-        echo ".env" >> "$GITIGNORE_FILE"
-    fi
-    if ! grep -q "^\.env\.\*" "$GITIGNORE_FILE"; then
-        echo ".env.*" >> "$GITIGNORE_FILE"
-    fi
-    if ! grep -q "^venv/$" "$GITIGNORE_FILE"; then
-        echo "venv/" >> "$GITIGNORE_FILE"
-    fi
-    echo -e "   ${GREEN}[OK] .env and venv are strictly ignored in .gitignore.${NC}"
+    for ig in ".env" ".env.*" "venv/" "installation_date.json" ".installation_date.json" ".deleted_tombstones.json"; do
+        if ! grep -q "^$ig$" "$GITIGNORE_FILE"; then
+            echo "$ig" >> "$GITIGNORE_FILE"
+        fi
+    done
+    echo -e "   ${GREEN}[OK] .env, venv, and dynamic installation_date.json are strictly ignored in .gitignore.${NC}"
 fi
 
 # 9. Automatic Virtual Environment (venv is default mode) & Package Setup
@@ -231,7 +227,13 @@ if command -v npm &>/dev/null; then
     echo -e "   ${GREEN}✓ Web dashboard and server compiled to dist/server.cjs.${NC}"
 fi
 
-# 11. Completion Summary
+# 11. Record dynamic installation date & cutoff (first install only, before app start)
+echo -e "\n${BLUE}[*] Verifying installation date cutoff configuration...${NC}"
+if [ -f "$SCRIPT_DIR/init_installation_date.py" ]; then
+    VOLUME_DIR="$VOLUME_DIR" $VENV_PYTHON "$SCRIPT_DIR/init_installation_date.py" || true
+fi
+
+# 12. Completion Summary
 echo -e "\n${BOLD}${GREEN}=================================================================${NC}"
 echo -e "${BOLD}${GREEN}   Configuration & Installation Complete!${NC}"
 echo -e "${BOLD}${GREEN}=================================================================${NC}\n"

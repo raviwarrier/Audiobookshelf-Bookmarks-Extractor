@@ -160,19 +160,14 @@ NODE_ENV=production
         with open(gitignore_path, "r", encoding="utf-8") as f:
             gi_content = f.read()
         needs_write = False
-        if ".env" not in gi_content:
-            gi_content += "\n.env\n"
-            needs_write = True
-        if ".env.*" not in gi_content:
-            gi_content += ".env.*\n"
-            needs_write = True
-        if "venv/" not in gi_content:
-            gi_content += "venv/\n"
-            needs_write = True
+        for ig_pattern in [".env", ".env.*", "venv/", "installation_date.json", ".installation_date.json", ".deleted_tombstones.json"]:
+            if ig_pattern not in gi_content:
+                gi_content += f"\n{ig_pattern}\n"
+                needs_write = True
         if needs_write:
             with open(gitignore_path, "w", encoding="utf-8") as f:
                 f.write(gi_content)
-        print("   [OK] .env and venv are strictly ignored in .gitignore (protected from git commits).")
+        print("   [OK] .env, venv, and dynamic installation_date.json are strictly ignored in .gitignore.")
 
     # Initialize venv (default mode)
     venv_dir = os.path.join(base_dir, "venv")
@@ -195,6 +190,17 @@ NODE_ENV=production
                 print("   [OK] Requirements installed into venv.")
             except Exception as e:
                 print(f"   Notice: pip install returned: {e}")
+
+    # Initialize installation_date.json dynamically if not already present
+    # Run after successful installation, before app start; never overwrites on updates
+    init_script = os.path.join(base_dir, "init_installation_date.py")
+    if os.path.exists(init_script):
+        py_runner = venv_py if os.path.exists(venv_py) else sys.executable
+        try:
+            import subprocess
+            subprocess.run([py_runner, init_script], check=False)
+        except Exception as e:
+            print(f"   [!] Note: installation date initialization deferred: {e}")
 
     print("\n" + "=" * 65)
     print("   Configuration Complete!")

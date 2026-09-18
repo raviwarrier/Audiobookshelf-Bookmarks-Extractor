@@ -325,9 +325,23 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
           <h2 className="text-base font-semibold text-white tracking-tight uppercase">
             Saved Bookmarks & Transcripts
           </h2>
-          <p className="text-xs text-neutral-400 mt-0.5 font-mono">
-            {snippets.length} snippets
-          </p>
+          <div className="flex flex-wrap items-center gap-2 mt-1">
+            <span className="text-xs text-neutral-400 font-mono">
+              {snippets.length} snippets
+            </span>
+            <span
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-neutral-900 border border-neutral-800 text-[11px] text-neutral-300 font-mono rounded"
+              title="Immutable installation cutoff: Bookmarks created prior to first installation date at 00:00:00 are preserved and ignored during sync."
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span>Cutoff: {syncState?.installation_date ? `${syncState.installation_date} 00:00` : 'First install'}</span>
+              {typeof syncState?.skipped_before_cutoff === 'number' && syncState.skipped_before_cutoff > 0 && (
+                <span className="text-neutral-500 border-l border-neutral-700 pl-1.5 ml-0.5">
+                  {syncState.skipped_before_cutoff} historical skipped
+                </span>
+              )}
+            </span>
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -368,6 +382,23 @@ export const SnippetsView: React.FC<SnippetsViewProps> = ({
         <div className="p-3 bg-neutral-950 border border-red-800 text-[11px] text-red-400 flex items-center gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5" />
           <span>{exportError}</span>
+        </div>
+      )}
+
+      {syncState?.is_syncing && (
+        <div className="p-2.5 bg-[#141414] border border-neutral-800 text-xs text-neutral-300 flex items-center justify-between gap-2 font-mono">
+          <div className="flex items-center gap-2">
+            <RotateCw className="w-3.5 h-3.5 text-emerald-400 animate-spin" />
+            <span>Syncing bookmarks created on or after {syncState?.installation_date ? `${syncState.installation_date} 00:00` : 'installation'}...</span>
+            {syncState?.current_item && (
+              <span className="text-neutral-400 truncate max-w-xs">{syncState.current_item}</span>
+            )}
+          </div>
+          {typeof syncState?.skipped_before_cutoff === 'number' && syncState.skipped_before_cutoff > 0 && (
+            <span className="text-[11px] text-neutral-500 shrink-0">
+              {syncState.skipped_before_cutoff} older bookmarks skipped
+            </span>
+          )}
         </div>
       )}
 

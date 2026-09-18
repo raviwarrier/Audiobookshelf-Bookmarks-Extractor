@@ -15,7 +15,7 @@ import threading
 import subprocess
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 try:
@@ -98,12 +98,199 @@ AUTO_SYNC_BOOKMARKS = os.environ.get("AUTO_SYNC_BOOKMARKS", "true").lower() in (
 BOOKMARK_SYNC_INTERVAL = int(os.environ.get("BOOKMARK_SYNC_INTERVAL", os.environ.get("SYNC_INTERVAL", "30")))
 ABS_API_TOKEN = os.environ.get("ABS_API_TOKEN", os.environ.get("ABS_TOKEN", "")).strip()
 
+# ==============================================================================
+# Immutable Installation Date & Bookmark Sync Cutoff Configuration
+# Dynamically created at first install, after successful installation and before
+# application start. Values are populated based on the system date and time at the
+# moment of first installation.
+# Preserves existing config files across application updates and restarts.
+# ==============================================================================
+def get_installation_config_paths() -> List[str]:
+    """Candidate file locations for the persistent installation date config."""
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(app_dir, "installation_date.json"),
+        os.path.join(VOLUME_DIR, "installation_date.json"),
+        os.path.join(app_dir, ".installation_date.json"),
+        os.path.join(VOLUME_DIR, ".installation_date.json")
+    ]
+    seen = set()
+    result = []
+    for c in candidates:
+        if c and c not in seen:
+            seen.add(c)
+            result.append(c)
+    return result
+
+def init_or_load_installation_config() -> Dict[str, Any]:
+    """
+    Checks if an installation date configuration file exists in the installation folder or volume.
+    If both file exists and date exists in it: DOES NOT overwrite with a new file.
+    If it doesn't exist: dynamically creates a new file populated from current system date and time.
+    """
+    candidate_paths = get_installation_config_paths()
+
+    # 1. Check if file exists in any candidate location and has date (preserves across updates)
+    for p in candidate_paths:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    date_val = data.get("cutoff_datetime") or data.get("installation_date") or data.get("installed_at")
+                    if date_val:
+                        logger.info(f"[Installation Config] Found existing immutable installation config at '{p}': {date_val}")
+                        return data
+            except Exception as e:
+                logger.warning(f"[Installation Config] Error reading {p}: {e}")
+
+    # 2. File doesn't exist: dynamically compute values from current system date and time
+    now_local = datetime.now()
+    now_utc = datetime.now(timezone.utc)
+    date_str = now_local.strftime("%Y-%m-%d")
+    cutoff_datetime = f"{date_str}T00:00:00"
+    cutoff_dt = datetime(now_local.year, now_local.month, now_local.day, 0, 0, 0)
+    cutoff_ts = cutoff_dt.timestamp()
+
+    config_data = {
+        "installation_date": date_str,
+        "cutoff_datetime": cutoff_datetime,
+        "cutoff_timestamp": cutoff_ts,
+        "installed_at": now_local.isoformat(),
+        "installed_at_utc": now_utc.isoformat(),
+        "note": f"Immutable installation date created dynamically on first install. Bookmarks created prior to {cutoff_datetime} are excluded from automated extraction."
+    }
+
+    # Save to candidate locations (application folder & volume directory)
+    for p in candidate_paths[:2]:
+        try:
+            parent = os.path.dirname(p)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(config_data, f, indent=2)
+            logger.info(f"[Installation Config] Created new immutable installation date file at '{p}' with system date {date_str}")
+        except Exception as e:
+            logger.warning(f"[Installation Config] Failed to create {p}: {e}")
+
+    return config_data
+
+INSTALLATION_CONFIG = init_or_load_installation_config()
+
+def is_bookmark_after_installation_cutoff(created_at_raw: Any) -> bool:
+    """
+    Checks if a bookmark was created on or after the installation date at 0:00:00.
+    Returns True if created on or after the cutoff date.
+    Returns False if created before the cutoff date or if creation date cannot be verified.
+    """
+    if created_at_raw is None or created_at_raw == "":
+        return False
+
+    cutoff_ts = float(INSTALLATION_CONFIG.get("cutoff_timestamp", 0.0))
+    cutoff_dt_str = INSTALLATION_CONFIG.get("cutoff_datetime") or INSTALLATION_CONFIG.get("installation_date") or ""
+
+    # Parse cutoff year/month/day from the config
+    c_year, c_month, c_day = None, None, None
+    try:
+        clean_cutoff = cutoff_dt_str[:10]
+        parts = [int(p) for p in clean_cutoff.split("-")]
+        if len(parts) == 3:
+            c_year, c_month, c_day = parts[0], parts[1], parts[2]
+    except Exception:
+        pass
+
+    # 1. Numeric epoch timestamp (ms or s)
+    try:
+        val = float(created_at_raw)
+        if val > 1e11:
+            val = val / 1000.0
+        # Check against cutoff timestamp (giving a 60s tolerance for slight clock skew)
+        if cutoff_ts > 0 and val >= (cutoff_ts - 60.0):
+            return True
+        # Check calendar date in UTC
+        if c_year and c_month and c_day:
+            dt_utc = datetime.fromtimestamp(val, tz=timezone.utc)
+            if (dt_utc.year, dt_utc.month, dt_utc.day) >= (c_year, c_month, c_day):
+                return True
+        return False
+    except (ValueError, TypeError):
+        pass
+
+    # 2. String representation (ISO 8601, formatted date, etc.)
+    if isinstance(created_at_raw, str):
+        if c_year and c_month and c_day:
+            try:
+                clean = created_at_raw.strip().replace("Z", "+00:00")
+                dt = datetime.fromisoformat(clean)
+                if (dt.year, dt.month, dt.day) >= (c_year, c_month, c_day):
+                    return True
+                return False
+            except Exception:
+                pass
+
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d"):
+                try:
+                    dt = datetime.strptime(created_at_raw.strip()[:10], fmt)
+                    if (dt.year, dt.month, dt.day) >= (c_year, c_month, c_day):
+                        return True
+                    return False
+                except Exception:
+                    pass
+
+    return False
+
+# Tombstone tracking for explicitly deleted bookmarks
+def _get_tombstone_file_path() -> str:
+    return os.path.join(VOLUME_DIR, ".deleted_tombstones.json")
+
+def load_deleted_tombstones() -> Dict[str, Any]:
+    p = _get_tombstone_file_path()
+    if os.path.isfile(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"tombstones": []}
+
+def record_deleted_tombstone(snippet_id: str, lib_id: Optional[str] = None, book_time: Optional[float] = None):
+    try:
+        data = load_deleted_tombstones()
+        entry = {
+            "snippet_id": snippet_id,
+            "library_item_id": lib_id,
+            "time": book_time,
+            "deleted_at": datetime.now().isoformat()
+        }
+        data["tombstones"].append(entry)
+        if len(data["tombstones"]) > 500:
+            data["tombstones"] = data["tombstones"][-500:]
+        p = _get_tombstone_file_path()
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not record tombstone: {e}")
+
+def is_bookmark_tombstoned(lib_id: Optional[str], book_time: Optional[float], snippet_id: Optional[str] = None) -> bool:
+    data = load_deleted_tombstones()
+    for item in data.get("tombstones", []):
+        if snippet_id and item.get("snippet_id") and snippet_id in item.get("snippet_id"):
+            return True
+        if lib_id and item.get("library_item_id") == str(lib_id):
+            if book_time is not None and item.get("time") is not None:
+                if abs(float(item["time"]) - float(book_time)) <= 5.0:
+                    return True
+    return False
+
 _sync_state: Dict[str, Any] = {
     "is_syncing": False,
     "last_synced_at": None,
     "total_synced": 0,
     "current_item": None,
-    "last_error": None
+    "last_error": None,
+    "installation_date": INSTALLATION_CONFIG.get("installation_date"),
+    "cutoff_datetime": INSTALLATION_CONFIG.get("cutoff_datetime"),
+    "skipped_before_cutoff": 0,
+    "skipped_tombstoned": 0
 }
 _sync_lock = threading.Lock()
 
@@ -1746,8 +1933,11 @@ def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Opt
         # Collect bookmarks from user profile, media progress, and active listening sessions
         candidate_bookmarks = []
         seen_keys = set()
+        skipped_prior_count = 0
+        skipped_tombstone_count = 0
 
         def _add_candidate(bm_data: Dict[str, Any], default_lib_id: Optional[str] = None):
+            nonlocal skipped_prior_count, skipped_tombstone_count
             if not isinstance(bm_data, dict):
                 return
             t_raw = bm_data.get("time")
@@ -1764,17 +1954,29 @@ def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Opt
             if not lib_id:
                 return
 
+            # Check immutable installation cutoff (bookmarks created prior to installation at 0:00 are skipped)
+            created_at_raw = bm_data.get("createdAt") or bm_data.get("created_at") or bm_data.get("timestamp")
+            if not is_bookmark_after_installation_cutoff(created_at_raw):
+                skipped_prior_count += 1
+                return
+
+            # Check if user previously deleted this bookmark (tombstone)
+            bm_id = bm_data.get("id")
+            if is_bookmark_tombstoned(lib_id, bm_time, bm_id):
+                skipped_tombstone_count += 1
+                return
+
             key = (str(lib_id), round(bm_time, 1))
             if key in seen_keys:
                 return
             seen_keys.add(key)
 
             candidate_bookmarks.append({
-                "id": bm_data.get("id"),
+                "id": bm_id,
                 "libraryItemId": str(lib_id),
                 "time": bm_time,
                 "title": bm_data.get("title") or "",
-                "createdAt": bm_data.get("createdAt")
+                "createdAt": created_at_raw
             })
 
         # 1. User bookmarks
@@ -1800,13 +2002,29 @@ def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Opt
         except Exception:
             pass
 
+        _sync_state["skipped_before_cutoff"] = skipped_prior_count
+        _sync_state["skipped_tombstoned"] = skipped_tombstone_count
+        _sync_state["installation_date"] = INSTALLATION_CONFIG.get("installation_date")
+        _sync_state["cutoff_datetime"] = INSTALLATION_CONFIG.get("cutoff_datetime")
+
         if not candidate_bookmarks:
             _sync_state["last_synced_at"] = datetime.now().isoformat()
             _sync_state["is_syncing"] = False
+            cutoff_date_str = INSTALLATION_CONFIG.get("installation_date", "installation date")
+            msg = (
+                f"No bookmarks found created on or after {cutoff_date_str} at 00:00 "
+                f"({skipped_prior_count} historical bookmarks skipped)."
+                if skipped_prior_count > 0 else
+                "No bookmarks found on Audiobookshelf server."
+            )
             return {
                 "status": "ok",
-                "message": "No bookmarks found on Audiobookshelf server.",
+                "message": msg,
                 "total_bookmarks": 0,
+                "skipped_before_cutoff": skipped_prior_count,
+                "skipped_tombstoned": skipped_tombstone_count,
+                "cutoff_datetime": INSTALLATION_CONFIG.get("cutoff_datetime"),
+                "installation_date": cutoff_date_str,
                 "unextracted_count": 0,
                 "processed_count": 0
             }
@@ -1920,8 +2138,12 @@ def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Opt
 
         return {
             "status": "success",
-            "message": f"Auto-Sync completed. Processed {processed_count} of {len(unextracted)} unextracted bookmarks.",
+            "message": f"Auto-Sync completed. Processed {processed_count} of {len(unextracted)} bookmarks created on or after {INSTALLATION_CONFIG.get('installation_date')} ({skipped_prior_count} older bookmarks preserved/skipped).",
             "total_bookmarks": len(candidate_bookmarks),
+            "skipped_before_cutoff": skipped_prior_count,
+            "skipped_tombstoned": skipped_tombstone_count,
+            "cutoff_datetime": INSTALLATION_CONFIG.get("cutoff_datetime"),
+            "installation_date": INSTALLATION_CONFIG.get("installation_date"),
             "unextracted_count": len(unextracted),
             "processed_count": processed_count
         }
@@ -2640,6 +2862,17 @@ async def delete_user_bookmark(
                         full_id = f"{book_dir}-{base_name}"
                         if clean_id in (full_id, base_name, fname) or target_pattern in (base_name, fname):
                             file_to_del = os.path.join(full_book_path, fname)
+                            if fname.endswith(".json"):
+                                try:
+                                    with open(file_to_del, "r", encoding="utf-8") as jf:
+                                        jdata = json.load(jf)
+                                        record_deleted_tombstone(
+                                            snippet_id=clean_id,
+                                            lib_id=jdata.get("library_item_id"),
+                                            book_time=float(jdata.get("current_time", jdata.get("start_time", 0)))
+                                        )
+                                except Exception:
+                                    pass
                             try:
                                 os.remove(file_to_del)
                                 deleted_count += 1
@@ -2652,6 +2885,9 @@ async def delete_user_bookmark(
                             os.rmdir(full_book_path)
                     except Exception:
                         pass
+
+    # Ensure tombstone is always recorded even if file search was non-standard
+    record_deleted_tombstone(snippet_id=clean_id)
 
     return {
         "status": "success",
@@ -2898,6 +3134,19 @@ async def logout():
     return response
 
 
+@app.get("/api/installation-date")
+@app.get("/api/user/installation-date")
+async def get_installation_date():
+    """Returns the immutable installation date and bookmark sync cutoff configuration."""
+    return {
+        "status": "success",
+        "installation_date": INSTALLATION_CONFIG.get("installation_date"),
+        "cutoff_datetime": INSTALLATION_CONFIG.get("cutoff_datetime"),
+        "cutoff_timestamp": INSTALLATION_CONFIG.get("cutoff_timestamp"),
+        "config": INSTALLATION_CONFIG
+    }
+
+
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint providing configuration, proxy mode, and system status."""
@@ -2913,6 +3162,9 @@ async def health_check():
         "whisper_model": WHISPER_MODEL_NAME,
         "whisper_device": WHISPER_DEVICE,
         "websocket_support": websockets is not None,
+        "installation_date": INSTALLATION_CONFIG.get("installation_date"),
+        "cutoff_datetime": INSTALLATION_CONFIG.get("cutoff_datetime"),
+        "sync_cutoff_rule": f"Extracts bookmarks created on or after {INSTALLATION_CONFIG.get('cutoff_datetime', 'installation')} only",
         "time": datetime.now().isoformat()
     }
 
