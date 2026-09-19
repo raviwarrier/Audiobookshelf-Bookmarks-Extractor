@@ -350,11 +350,22 @@ export function App() {
   }, [loadActiveSession, syncUserBookmarks]);
 
   // Automated Real-Time Background Polling:
-  // Detects newly completed manual or intercepted bookmarks and refreshes the snippets view automatically!
+  // Detects newly completed manual or intercepted bookmarks with adaptive, visibility-aware intervals
   useEffect(() => {
     if (!activeToken || !user) return;
 
-    const interval = setInterval(async () => {
+    let isSubscribed = true;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+
+    const pollStatus = async () => {
+      if (!isSubscribed) return;
+
+      // When browser tab is in background or minimized, throttle polling to 45s to avoid heating CPU/SSD
+      if (typeof document !== 'undefined' && document.hidden) {
+        timerId = setTimeout(pollStatus, 45000);
+        return;
+      }
+
       try {
         const endpoint = `${sidecarUrl.replace(/\/+$/, '')}/api/user/bookmarks/status`;
         let statusData: any = null;
@@ -411,10 +422,34 @@ export function App() {
       } catch {
         // Silent catch for background heartbeat
       }
-    }, 4000);
 
-    return () => clearInterval(interval);
-  }, [activeToken, user, sidecarUrl, serverUrl, useProxy, syncUserBookmarks]);
+      if (!isSubscribed) return;
+
+      // Adaptive polling delay:
+      // When actively extracting/syncing, poll every 6s for quick feedback;
+      // When idle, poll every 18s (dramatically reduces ABS server load and CPU usage)
+      const nextDelay = (syncState?.is_syncing) ? 6000 : 18000;
+      timerId = setTimeout(pollStatus, nextDelay);
+    };
+
+    // Initial poll after short delay
+    timerId = setTimeout(pollStatus, 2500);
+
+    // Resume immediately when user focuses back on the tab
+    const handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden && isSubscribed) {
+        if (timerId) clearTimeout(timerId);
+        pollStatus();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      isSubscribed = false;
+      if (timerId) clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [activeToken, user, sidecarUrl, serverUrl, useProxy, syncUserBookmarks, syncState?.is_syncing]);
 
   // Autonomous / Manual Trigger for Audiobookshelf Background Bookmark Sync
   const handleTriggerSync = useCallback(async () => {

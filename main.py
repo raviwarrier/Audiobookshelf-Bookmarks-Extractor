@@ -7,6 +7,15 @@ and manages per-user bookmarks and snippets under {username}/bookmarks.
 
 import os
 import sys
+
+# Limit OpenBLAS / OpenMP thread pools so ML libraries don't monopolize all CPU cores on Raspberry Pi
+if "OMP_NUM_THREADS" not in os.environ:
+    os.environ["OMP_NUM_THREADS"] = "2"
+if "OPENBLAS_NUM_THREADS" not in os.environ:
+    os.environ["OPENBLAS_NUM_THREADS"] = "2"
+if "MKL_NUM_THREADS" not in os.environ:
+    os.environ["MKL_NUM_THREADS"] = "2"
+
 import re
 import json
 import shutil
@@ -16,7 +25,7 @@ import subprocess
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 try:
     import httpx
@@ -29,6 +38,19 @@ except ImportError:
     websockets = None
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
+# Persistent HTTP session with connection pooling to eliminate socket thrashing against Audiobookshelf
+_http_session = requests.Session()
+_http_adapter = HTTPAdapter(
+    pool_connections=15,
+    pool_maxsize=30,
+    max_retries=Retry(total=2, backoff_factor=0.3, status_forcelist=[502, 503, 504])
+)
+_http_session.mount("http://", _http_adapter)
+_http_session.mount("https://", _http_adapter)
+
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from fastapi import FastAPI, Request, Header, HTTPException, Depends, Query, Response
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, JSONResponse, StreamingResponse
@@ -80,6 +102,11 @@ SNIPPETS_DIR = VOLUME_DIR  # Kept for backward compatibility
 WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base.en")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+# Restrict Whisper inference CPU threads so it does not starve other host services on Raspberry Pi
+WHISPER_CPU_THREADS = int(os.environ.get("WHISPER_CPU_THREADS", os.environ.get("WHISPER_THREADS", "2")))
+# Control whether Whisper prewarms immediately on startup (default: false to maintain 0% CPU at idle)
+PREWARM_WHISPER = os.environ.get("PREWARM_WHISPER", "false").lower() in ("true", "1", "yes")
+
 SNIPPET_DURATION = int(os.environ.get("SNIPPET_DURATION", "60"))
 SNIPPET_PRE_ROLL = float(os.environ.get("SNIPPET_PRE_ROLL", "30.0"))
 
@@ -95,7 +122,9 @@ DEFAULT_ABS_URL = os.environ.get("DEFAULT_ABS_URL", os.environ.get("ABS_PUBLIC_U
 # without requiring any reverse proxy interception (no routing to port 13380 required).
 # ==============================================================================
 AUTO_SYNC_BOOKMARKS = os.environ.get("AUTO_SYNC_BOOKMARKS", "true").lower() in ("true", "1", "yes")
-BOOKMARK_SYNC_INTERVAL = int(os.environ.get("BOOKMARK_SYNC_INTERVAL", os.environ.get("SYNC_INTERVAL", "30")))
+# Default sync interval is 120s (2 minutes) to prevent constant SSD I/O and CPU churn
+BOOKMARK_SYNC_INTERVAL = int(os.environ.get("BOOKMARK_SYNC_INTERVAL", os.environ.get("SYNC_INTERVAL", "120")))
+TOKEN_CACHE_TTL = int(os.environ.get("TOKEN_CACHE_TTL", "60"))
 ABS_API_TOKEN = os.environ.get("ABS_API_TOKEN", os.environ.get("ABS_TOKEN", "")).strip()
 
 # ==============================================================================
@@ -293,9 +322,15 @@ _sync_state: Dict[str, Any] = {
     "skipped_tombstoned": 0
 }
 _sync_lock = threading.Lock()
+_last_saved_session_hash: Optional[str] = None
 
 def save_sync_session(token: str, server_url: str, user_info: Dict[str, Any]):
     """Persists authenticated credentials so background sync runs 24/7 across server reboots."""
+    global _last_saved_session_hash
+    session_hash = f"{token}:{server_url}:{user_info.get('id', '')}"
+    if _last_saved_session_hash == session_hash:
+        return  # Avoid redundant SSD writes
+
     try:
         session_file = os.path.join(VOLUME_DIR, ".abs_sync_session.json")
         data = {
@@ -309,6 +344,7 @@ def save_sync_session(token: str, server_url: str, user_info: Dict[str, Any]):
         }
         with open(session_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+        _last_saved_session_hash = session_hash
     except Exception as e:
         logger.warning(f"Could not persist sync session: {e}")
 
@@ -341,20 +377,21 @@ def get_candidate_volume_dirs() -> List[str]:
     """
     Returns an ordered list of candidate directories where user bookmarks may reside.
     Ensures seamless discovery across Raspberry Pi, Docker, and customized mount paths.
+    Note: Media library paths (e.g. /srv/ssd/Bookshelf) are intentionally excluded to prevent
+    unnecessary SSD I/O and disk heating.
     """
     dirs = []
-    if VOLUME_DIR and VOLUME_DIR not in dirs:
+    if VOLUME_DIR and VOLUME_DIR not in dirs and os.path.isdir(VOLUME_DIR):
         dirs.append(VOLUME_DIR)
     for p in [
         "/srv/ssd/Appdata/local/advplyr-bookshelf/bookmarks",
         "/srv/ssd/Bookshelf/advplyr-bookshelf/bookmarks",
         "/srv/ssd/Appdata/local/Audiobookshelf-Bookmarks-Extractor/bookmarks",
         "/srv/ssd/Appdata/local/advplyr-bookshelf",
-        "/srv/ssd/Bookshelf",
         "/data",
         "/bookmarks"
     ]:
-        if p not in dirs:
+        if p not in dirs and os.path.isdir(p):
             dirs.append(p)
     return dirs
 
@@ -452,12 +489,16 @@ def map_container_path_to_host(container_path: str, book_title: Optional[str] = 
             logger.info(f"Auto-discovered audio file at '{test_c}'")
             return test_c
 
-    # 4. Search by filename inside candidate library roots
+    # 4. Search by filename inside candidate library roots (bounded depth to protect SSD and CPU)
     filename = os.path.basename(container_path)
     if filename:
-        for search_base in [AUDIOBOOKS_PATH, "/srv/ssd/Bookshelf/Audiobooks", "/srv/ssd/Bookshelf/Summaries", "/srv/ssd/Bookshelf"]:
+        for search_base in [AUDIOBOOKS_PATH, "/srv/ssd/Bookshelf/Audiobooks", "/srv/ssd/Bookshelf/Summaries"]:
             if search_base and os.path.isdir(search_base):
+                base_depth = search_base.rstrip(os.sep).count(os.sep)
                 for dirpath, _, filenames in os.walk(search_base):
+                    # Do not recurse more than 3 directory levels deep
+                    if dirpath.count(os.sep) - base_depth > 3:
+                        continue
                     if filename in filenames:
                         found = os.path.join(dirpath, filename)
                         logger.info(f"Found audio file by filename search: '{found}'")
@@ -489,13 +530,16 @@ _last_authenticated_session: Dict[str, Any] = {
 
 @app.on_event("startup")
 async def startup_event():
-    """Pre-warm Whisper model asynchronously on server startup and start autonomous background bookmark sync."""
-    def _warmup():
-        try:
-            get_whisper_model()
-        except Exception as e:
-            logger.warning(f"Whisper background pre-warm encountered: {e}")
-    asyncio.create_task(asyncio.to_thread(_warmup))
+    """Start autonomous background bookmark sync daemon and handle Whisper model initialization."""
+    if PREWARM_WHISPER:
+        def _warmup():
+            try:
+                get_whisper_model()
+            except Exception as e:
+                logger.warning(f"Whisper background pre-warm encountered: {e}")
+        asyncio.create_task(asyncio.to_thread(_warmup))
+    else:
+        logger.info(f"Whisper lazy-loading active (max threads: {WHISPER_CPU_THREADS}) - idle CPU stays near 0%.")
     asyncio.create_task(background_bookmark_sync_daemon())
 
 # Enable CORS so native mobile apps (iOS / Android), WebViews, and external clients can call endpoints directly
@@ -517,16 +561,17 @@ _vosk_model = None
 
 
 def get_whisper_model():
-    """Lazy-load the faster-whisper model to optimize startup time and memory."""
+    """Lazy-load the faster-whisper model to optimize startup time, CPU threads, and memory."""
     global _whisper_model
     if _whisper_model is None:
-        logger.info(f"Loading faster-whisper model '{WHISPER_MODEL_NAME}' on {WHISPER_DEVICE} ({WHISPER_COMPUTE_TYPE})...")
+        logger.info(f"Loading faster-whisper model '{WHISPER_MODEL_NAME}' on {WHISPER_DEVICE} ({WHISPER_COMPUTE_TYPE}, threads={WHISPER_CPU_THREADS})...")
         try:
             from faster_whisper import WhisperModel
             _whisper_model = WhisperModel(
                 WHISPER_MODEL_NAME,
                 device=WHISPER_DEVICE,
-                compute_type=WHISPER_COMPUTE_TYPE
+                compute_type=WHISPER_COMPUTE_TYPE,
+                cpu_threads=WHISPER_CPU_THREADS
             )
             logger.info("faster-whisper model loaded successfully.")
         except Exception as e:
@@ -733,12 +778,18 @@ def extract_authors(meta: Any, fallback: str = "Unknown Author") -> str:
     return fallback
 
 
+_token_validation_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_token_cache_lock = threading.Lock()
+
+
 def validate_abs_token(token: str, server_url: Optional[str] = None) -> Dict[str, Any]:
     """
     Validate the Bearer token with Audiobookshelf via GET {target_server}/api/me.
     Uses the dynamically provided server_url if passed, falling back to ABS_SERVER_URL.
     Returns user dict with id and username.
+    Caches token validation results for TOKEN_CACHE_TTL seconds to avoid overwhelming Audiobookshelf.
     """
+    global _token_validation_cache
     target_server = resolve_abs_server_url(req_url=server_url)
 
     if not token:
@@ -748,6 +799,14 @@ def validate_abs_token(token: str, server_url: Optional[str] = None) -> Dict[str
     if token.lower().startswith("bearer "):
         token = token[7:].strip()
 
+    cache_key = f"{target_server}:{token}"
+    now = time.time()
+    with _token_cache_lock:
+        if cache_key in _token_validation_cache:
+            cached_time, cached_user = _token_validation_cache[cache_key]
+            if now - cached_time < TOKEN_CACHE_TTL:
+                return cached_user
+
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
@@ -755,8 +814,10 @@ def validate_abs_token(token: str, server_url: Optional[str] = None) -> Dict[str
 
     try:
         url = f"{target_server}/api/me"
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = _http_session.get(url, headers=headers, timeout=10)
         if resp.status_code != 200:
+            with _token_cache_lock:
+                _token_validation_cache.pop(cache_key, None)
             logger.warning(f"ABS token validation failed with status {resp.status_code} at {target_server}")
             raise HTTPException(
                 status_code=401,
@@ -780,6 +841,13 @@ def validate_abs_token(token: str, server_url: Optional[str] = None) -> Dict[str
             "server_url": target_server
         }
 
+        with _token_cache_lock:
+            _token_validation_cache[cache_key] = (now, res_user)
+            if len(_token_validation_cache) > 50:
+                _token_validation_cache = {
+                    k: v for k, v in _token_validation_cache.items() if now - v[0] < TOKEN_CACHE_TTL * 2
+                }
+
         # Cache session globally so background workers can resolve metadata even if headers are absent
         global _last_authenticated_session
         _last_authenticated_session = {
@@ -788,7 +856,7 @@ def validate_abs_token(token: str, server_url: Optional[str] = None) -> Dict[str
             "time": datetime.now()
         }
 
-        # Persist session to disk for 24/7 background sync daemon
+        # Persist session to disk for 24/7 background sync daemon (deduped)
         save_sync_session(token, target_server, res_user)
 
         return res_user
@@ -979,7 +1047,7 @@ def resolve_audio_target(
     if target_bookmark_id:
         try:
             b_url = f"{target_server}/api/me/bookmarks"
-            b_resp = requests.get(b_url, headers=headers, timeout=10)
+            b_resp = _http_session.get(b_url, headers=headers, timeout=10)
             if b_resp.status_code == 200:
                 b_data = b_resp.json()
                 b_list = b_data.get("bookmarks") if isinstance(b_data, dict) else (b_data if isinstance(b_data, list) else [])
@@ -1001,7 +1069,7 @@ def resolve_audio_target(
 
     try:
         sessions_url = f"{target_server}/api/me/listening-sessions"
-        resp = requests.get(sessions_url, headers=headers, timeout=10)
+        resp = _http_session.get(sessions_url, headers=headers, timeout=10)
         if resp.status_code == 200:
             sessions_data = resp.json()
             sessions = []
@@ -1051,7 +1119,7 @@ def resolve_audio_target(
         progress_list = user_info.get("mediaProgress", []) if user_info else []
         if not progress_list:
             try:
-                me_res = requests.get(f"{target_server}/api/me", headers=headers, timeout=10)
+                me_res = _http_session.get(f"{target_server}/api/me", headers=headers, timeout=10)
                 if me_res.status_code == 200:
                     me_data = me_res.json()
                     user_d = me_data.get("user", {}) if isinstance(me_data.get("user"), dict) else me_data
@@ -1083,7 +1151,7 @@ def resolve_audio_target(
     # Resolve book item details and audio file path
     item_url = f"{target_server}/api/items/{library_item_id}?expanded=1"
     try:
-        item_resp = requests.get(item_url, headers=headers, timeout=10)
+        item_resp = _http_session.get(item_url, headers=headers, timeout=10)
         if item_resp.status_code == 200:
             item_data = item_resp.json()
             media = item_data.get("media", {})
@@ -1259,7 +1327,7 @@ def create_unextractable_bookmark_snippet(
         try:
             item_url = f"{server_url.rstrip('/')}/api/items/{resolved_lib_id}?expanded=1"
             headers = {"Authorization": f"Bearer {auth_token}"}
-            item_resp = requests.get(item_url, headers=headers, timeout=5)
+            item_resp = _http_session.get(item_url, headers=headers, timeout=5)
             if item_resp.status_code == 200:
                 item_data = item_resp.json()
                 media = item_data.get("media", {})
@@ -1860,6 +1928,61 @@ transcription_engine: "{engine_used}"
 # any reverse proxy modifications.
 # ==============================================================================
 
+_snippet_meta_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_snippet_cache_lock = threading.Lock()
+
+
+def get_cached_existing_extractions(safe_username: str, user_id: str) -> List[Dict[str, Any]]:
+    """
+    Returns existing extractions with mtime-based in-memory caching.
+    Prevents repeated file opens and JSON parsing of hundreds of files on the SSD during every sync loop.
+    """
+    global _snippet_meta_cache
+    existing_extractions = []
+
+    for root in get_candidate_volume_dirs():
+        for u in [safe_username, safe_username.lower(), str(user_id)]:
+            for sub in [os.path.join(root, u, "bookmarks"), os.path.join(root, u)]:
+                if not os.path.isdir(sub):
+                    continue
+                try:
+                    book_dirs = os.listdir(sub)
+                except Exception:
+                    continue
+
+                for book_dir in book_dirs:
+                    full_b_dir = os.path.join(sub, book_dir)
+                    if not os.path.isdir(full_b_dir) or book_dir.lower() in ("bookmarks", "snippets"):
+                        continue
+                    try:
+                        filenames = os.listdir(full_b_dir)
+                    except Exception:
+                        continue
+
+                    for f in filenames:
+                        if f.endswith(".json") and not f.startswith("."):
+                            full_path = os.path.join(full_b_dir, f)
+                            try:
+                                mtime = os.path.getmtime(full_path)
+                                with _snippet_cache_lock:
+                                    if full_path in _snippet_meta_cache and _snippet_meta_cache[full_path][0] == mtime:
+                                        meta = _snippet_meta_cache[full_path][1]
+                                    else:
+                                        with open(full_path, "r", encoding="utf-8") as jf:
+                                            meta = json.load(jf)
+                                        _snippet_meta_cache[full_path] = (mtime, meta)
+
+                                existing_extractions.append({
+                                    "library_item_id": meta.get("library_item_id"),
+                                    "current_time": float(meta.get("current_time", -999)),
+                                    "start_time": float(meta.get("start_time", -999)),
+                                    "duration": float(meta.get("duration", 60))
+                                })
+                            except Exception:
+                                pass
+    return existing_extractions
+
+
 def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Optional[str] = None) -> Dict[str, Any]:
     """
     Scans Audiobookshelf for bookmarks created on mobile/web apps and automatically extracts
@@ -1907,7 +2030,7 @@ def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Opt
 
         # Query user data from Audiobookshelf
         url = f"{target_server}/api/me"
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = _http_session.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
             err_msg = f"Audiobookshelf server at {target_server} returned HTTP {resp.status_code}"
             logger.warning(f"[Auto-Sync] {err_msg}")
@@ -1991,7 +2114,7 @@ def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Opt
 
         # 3. Active listening sessions
         try:
-            sess_resp = requests.get(f"{target_server}/api/me/listening-sessions", headers=headers, timeout=10)
+            sess_resp = _http_session.get(f"{target_server}/api/me/listening-sessions", headers=headers, timeout=10)
             if sess_resp.status_code == 200:
                 s_data = sess_resp.json()
                 s_list = s_data if isinstance(s_data, list) else (s_data.get("sessions") or [])
@@ -2029,31 +2152,9 @@ def run_bookmark_sync_cycle(force_token: Optional[str] = None, force_server: Opt
                 "processed_count": 0
             }
 
-        # Scan local disk for existing extractions
+        # Scan local disk for existing extractions using mtime-cached metadata
         safe_username = sanitize_filename(username)
-        existing_extractions = []
-        for root in get_candidate_volume_dirs():
-            for u in [safe_username, safe_username.lower(), str(user_id)]:
-                for sub in [os.path.join(root, u, "bookmarks"), os.path.join(root, u)]:
-                    if not os.path.isdir(sub):
-                        continue
-                    for book_dir in os.listdir(sub):
-                        full_b_dir = os.path.join(sub, book_dir)
-                        if not os.path.isdir(full_b_dir) or book_dir.lower() in ("bookmarks", "snippets"):
-                            continue
-                        for f in os.listdir(full_b_dir):
-                            if f.endswith(".json"):
-                                try:
-                                    with open(os.path.join(full_b_dir, f), "r", encoding="utf-8") as jf:
-                                        meta = json.load(jf)
-                                        existing_extractions.append({
-                                            "library_item_id": meta.get("library_item_id"),
-                                            "current_time": float(meta.get("current_time", -999)),
-                                            "start_time": float(meta.get("start_time", -999)),
-                                            "duration": float(meta.get("duration", 60))
-                                        })
-                                except Exception:
-                                    pass
+        existing_extractions = get_cached_existing_extractions(safe_username, str(user_id))
 
         # Identify unextracted bookmarks
         unextracted = []

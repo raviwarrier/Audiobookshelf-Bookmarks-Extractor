@@ -61,7 +61,12 @@ module.exports = {
         INTERCEPT_PRE_ROLL: 30,         // Seconds to capture before the bookmark
         VOLUME_DIR: '/srv/ssd/Appdata/local/advplyr-bookshelf/bookmarks',
         AUDIOBOOKS_PATH: '/srv/ssd/Bookshelf/Audiobooks',
-        PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries'
+        PATH_MAPPINGS: '/audiobooks:/srv/ssd/Bookshelf/Audiobooks,/summaries:/srv/ssd/Bookshelf/Summaries',
+        BOOKMARK_SYNC_INTERVAL: 120, // 2 minutes interval (prevents constant disk I/O & CPU churn)
+        PREWARM_WHISPER: 'false',    // Lazy-load Whisper only on extraction (saves RAM & 0% idle CPU)
+        WHISPER_THREADS: '2',        // Limit Whisper to 2 CPU threads to leave headroom for OS & ABS
+        OMP_NUM_THREADS: '2',        // Limit OpenMP thread pool
+        OPENBLAS_NUM_THREADS: '2'    // Limit OpenBLAS thread pool
       }
     }
   ]
